@@ -64,7 +64,7 @@ class _TestScreenState extends State<TestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('GLB Model Test Screen')),
+      appBar: AppBar(title: const Text('GLB Model 2 Test Screen')),
       body: Column(
         // 'Column' stacks its children vertically.
         children: [
@@ -87,8 +87,7 @@ class _TestScreenState extends State<TestScreen> {
 
               // This adds user controls to spin the model.
               cameraControls: true,
-              // This makes the model spin automatically.
-              autoRotate: true,
+              backgroundColor: const Color.fromARGB(255, 99, 94, 245),
             ),
           ),
 
