@@ -1,14 +1,13 @@
 // lib/screens/home_page.dart
 
-import 'dart:io'; // Needed to read files
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart'; // Needed to find the folder
-import 'package:model_viewer_plus/model_viewer_plus.dart'; // Needed to view the model
-import 'furniture_assembly_page.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../widgets/action_card.dart';
 import 'upload_page.dart';
 import 'test_screen.dart';
+import 'furniture_assembly_page.dart'; // To open the player
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -19,70 +18,73 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
-  
-  // This list will hold the real folders found on your phone
-  List<FileSystemEntity> _historyFolders = [];
+
+  // This list will hold the folders (Projects) found on your phone
+  List<FileSystemEntity> _projectFolders = [];
   bool _isLoadingHistory = true;
 
   @override
   void initState() {
     super.initState();
-    // Load the history as soon as the app starts
     _loadHistory();
   }
 
-  // --- 1. LOAD HISTORY FUNCTION ---
+  // --- 1. SCAN PHONE FOR FOLDERS ---
   Future<void> _loadHistory() async {
-    setState(() { _isLoadingHistory = true; });
-    
+    setState(() {
+      _isLoadingHistory = true;
+    });
+
     try {
       final Directory appDir = await getApplicationDocumentsDirectory();
-      
+
       // Get all items in the documents directory
-      // We only want the Directories (folders), because that's how we saved them (Folder = Furniture Name)
       final List<FileSystemEntity> entities = appDir.listSync();
-      
+
+      // Filter: Keep only Directories (these are your furniture names)
       final List<FileSystemEntity> folders = entities.where((e) {
-        return e is Directory; // Filter to keep only folders
+        return e is Directory;
       }).toList();
 
-      // Sort them by date modified (newest first)
+      // Sort by date modified (Newest projects at top)
       folders.sort((a, b) {
         return b.statSync().modified.compareTo(a.statSync().modified);
       });
 
       setState(() {
-        _historyFolders = folders;
+        _projectFolders = folders;
         _isLoadingHistory = false;
       });
-      
     } catch (e) {
       print("Error loading history: $e");
-      setState(() { _isLoadingHistory = false; });
+      setState(() {
+        _isLoadingHistory = false;
+      });
     }
   }
 
-  // --- 2. OPEN MODEL FUNCTION ---
-void _openSavedModel(Directory folder) {
-    // Navigate directly to the Assembly Page
-    // We pass the whole folder so it can find ALL steps inside
+  // --- 2. OPEN THE ASSEMBLY PLAYER ---
+  void _openProject(Directory folder) {
     Navigator.push(
       context,
       MaterialPageRoute(
+        // We pass the folder to the Assembly Page so it can find all steps inside
         builder: (context) => FurnitureAssemblyPage(folder: folder),
       ),
     );
   }
 
-  // --- 3. DELETE FUNCTION (Optional) ---
-  Future<void> _deleteItem(Directory folder) async {
+  // --- 3. DELETE PROJECT ---
+  Future<void> _deleteProject(Directory folder) async {
     try {
-      await folder.delete(recursive: true); // Delete folder and contents
-      _loadHistory(); // Refresh the list
+      await folder.delete(
+        recursive: true,
+      ); // Delete folder and all models inside
+      _loadHistory(); // Refresh the UI
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Item deleted")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Project deleted")));
       }
     } catch (e) {
       print("Error deleting: $e");
@@ -98,129 +100,138 @@ void _openSavedModel(Directory folder) {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFFBFBFA),
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: _loadHistory, // Pull down to refresh list
           child: ListView(
             padding: const EdgeInsets.all(16.0),
             children: [
+              // HEADER
               const Text(
                 'Welcome to AR Assembly',
                 style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
               const Text(
-                'Get step-by-step instructions for your IKEA furniture and more.',
+                'Create your own 3D guides or view saved projects.',
                 style: TextStyle(fontSize: 16, color: Colors.grey),
               ),
               const SizedBox(height: 24),
 
-              // --- ACTION CARDS ---
+              // ACTION CARDS (Top Grid)
               GridView.count(
                 crossAxisCount: 2,
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,
-                childAspectRatio: 0.8,
+                childAspectRatio: 0.85,
                 children: [
                   ActionCard(
-                    title: 'PDF upload',
+                    title: 'Create Guide',
                     imagePath: 'assets/images/pdf_upload.png',
                     onTap: () async {
-                      // Wait for the Upload Page to close, then reload history
-                      // This ensures the new item shows up immediately when you come back!
+                      // Wait for UploadPage to close, then reload history
                       await Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => const UploadPage()),
+                        MaterialPageRoute(
+                          builder: (context) => const UploadPage(),
+                        ),
                       );
-                      _loadHistory(); 
+                      _loadHistory();
                     },
                   ),
                   ActionCard(
-                    title: 'Camera scan',
+                    title: 'Quick Test',
                     imagePath: 'assets/images/camera_scan.png',
-                    onTap: () { print("Camera Tapped"); },
-                  ),
-                  ActionCard(
-                    title: 'My Furniture',
-                    imagePath: 'assets/images/furniture.png',
-                    onTap: () { print("Furniture Tapped"); },
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const TestScreen(),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
+
               const SizedBox(height: 32),
 
+              // HISTORY HEADER
               const Text(
-                'History',
+                'My Projects',
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
-              
-              // --- TEST SCREEN BUTTON ---
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent, 
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-                child: const Text('Go to 3D/AR Test Screen'),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const TestScreen()),
-                  );
-                },
-              ),
-              const SizedBox(height: 16), 
 
-              // --- DYNAMIC HISTORY LIST ---
+              // DYNAMIC PROJECT LIST
               if (_isLoadingHistory)
-                const Center(child: CircularProgressIndicator())
-              else if (_historyFolders.isEmpty)
                 const Center(
                   child: Padding(
-                    padding: EdgeInsets.all(20.0),
-                    child: Text("No history yet. Upload a manual!"),
+                    padding: EdgeInsets.all(20),
+                    child: CircularProgressIndicator(),
+                  ),
+                )
+              else if (_projectFolders.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(30),
+                  alignment: Alignment.center,
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.inventory_2_outlined,
+                        size: 60,
+                        color: Colors.grey.shade300,
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        "No projects yet",
+                        style: TextStyle(color: Colors.grey, fontSize: 18),
+                      ),
+                      const Text(
+                        "Tap 'Create Guide' to start!",
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
                   ),
                 )
               else
-                // Use the spread operator ... to insert the list of widgets
-                ..._historyFolders.map((entity) {
+                // Render the list of folders
+                ..._projectFolders.map((entity) {
                   final Directory folder = entity as Directory;
-                  final String folderName = folder.path.split('/').last; // Get just the name
-                  
+                  final String folderName = folder.path.split('/').last;
+
+                  // Count files inside (optional, nice for UI)
+                  int fileCount = 0;
+                  try {
+                    fileCount = folder
+                        .listSync()
+                        .where((e) => e.path.endsWith('.glb'))
+                        .length;
+                  } catch (_) {}
+
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
-                    elevation: 1,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(12),
-                      leading: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(Icons.inventory_2_outlined, color: Colors.orange),
-                      ),
-                      title: Text(
-                        folderName,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      ),
-                      subtitle: const Text("Tap to view model"),
-                      trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-                      
-                      // RELOAD: Tap to open
-                      onTap: () => _openSavedModel(folder),
-                      
-                      // DELETE: Long press to remove
+                    elevation: 0,
+                    color: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: Colors.grey.shade200),
+                    ),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _openProject(folder), // OPEN PROJECT
                       onLongPress: () {
+                        // DELETE PROJECT
                         showDialog(
                           context: context,
                           builder: (ctx) => AlertDialog(
-                            title: const Text("Delete Item?"),
-                            content: Text("Remove '$folderName' from history?"),
+                            title: const Text("Delete Project?"),
+                            content: Text(
+                              "Are you sure you want to delete '$folderName'?",
+                            ),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.pop(ctx),
@@ -229,29 +240,89 @@ void _openSavedModel(Directory folder) {
                               TextButton(
                                 onPressed: () {
                                   Navigator.pop(ctx);
-                                  _deleteItem(folder);
+                                  _deleteProject(folder);
                                 },
-                                child: const Text("Delete", style: TextStyle(color: Colors.red)),
+                                child: const Text(
+                                  "Delete",
+                                  style: TextStyle(color: Colors.red),
+                                ),
                               ),
                             ],
                           ),
                         );
                       },
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          children: [
+                            // Icon Box
+                            Container(
+                              width: 50,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                color: Colors.orange.shade50,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.folder_open,
+                                color: Colors.orange,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+
+                            // Text Info
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    folderName,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "$fileCount steps",
+                                    style: TextStyle(
+                                      color: Colors.grey.shade500,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const Icon(
+                              Icons.arrow_forward_ios,
+                              size: 16,
+                              color: Colors.grey,
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   );
                 }),
-                
-                // Add some space at the bottom
-                const SizedBox(height: 40),
+
+              const SizedBox(height: 40),
             ],
           ),
         ),
       ),
       bottomNavigationBar: BottomNavigationBar(
+        backgroundColor: Colors.white,
+        selectedItemColor: Colors.orange,
+        unselectedItemColor: Colors.grey,
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
           BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Account'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Account',
+          ),
         ],
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,

@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
 
 class FurnitureAssemblyPage extends StatefulWidget {
-  final Directory folder; // We pass the specific furniture folder here
+  final Directory folder;
 
   const FurnitureAssemblyPage({super.key, required this.folder});
 
@@ -18,25 +18,33 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   int _currentIndex = 0;
   bool _isLoading = true;
 
+  Color _currentBackgroundColor = Colors.grey.shade200;
+
+  final List<Color> _palette = [
+    Colors.grey.shade200,
+    Colors.white,
+    Colors.black,
+    const Color(0xFF1A1A1A),
+    Colors.blue.shade100,
+    Colors.green.shade100,
+    Colors.orange.shade100,
+    Colors.purple.shade100,
+  ];
+
   @override
   void initState() {
     super.initState();
     _loadAssemblySteps();
   }
 
-  // Scan the folder and find all GLB files
   Future<void> _loadAssemblySteps() async {
     try {
       final List<FileSystemEntity> entities = widget.folder.listSync();
-      
-      // Filter for only .glb files
       final List<File> glbFiles = entities
           .where((e) => e is File && e.path.endsWith('.glb'))
           .cast<File>()
           .toList();
 
-      // Sort them by name (or date) so Step 1 comes before Step 2
-      // Since we named them with timestamps (model_123...), sorting by name works perfectly.
       glbFiles.sort((a, b) => a.path.compareTo(b.path));
 
       setState(() {
@@ -45,13 +53,14 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
       });
     } catch (e) {
       print("Error loading steps: $e");
-      setState(() { _isLoading = false; });
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
   void _nextStep() {
     setState(() {
-      // Stop at the last step
       if (_currentIndex < _steps.length - 1) {
         _currentIndex++;
       }
@@ -60,7 +69,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
 
   void _previousStep() {
     setState(() {
-      // Stop at the first step
       if (_currentIndex > 0) {
         _currentIndex--;
       }
@@ -69,7 +77,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
 
   @override
   Widget build(BuildContext context) {
-    // 1. Get the folder name for the title (e.g., "IKEA Table")
     final String title = widget.folder.path.split('/').last;
 
     if (_isLoading) {
@@ -79,50 +86,124 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     if (_steps.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: Text(title)),
-        body: const Center(child: Text("No assembly steps found in this folder.")),
+        body: const Center(
+          child: Text("No assembly steps found in this folder."),
+        ),
       );
     }
 
-    // Get current file
     final File currentFile = _steps[_currentIndex];
-    final String currentStepName = "Step ${_currentIndex + 1} of ${_steps.length}";
+    final String currentStepName =
+        "Step ${_currentIndex + 1} of ${_steps.length}";
 
     return Scaffold(
+      extendBodyBehindAppBar: true,
+
       appBar: AppBar(
         title: Text(title),
-        backgroundColor: Colors.transparent, // Transparent for AR feel
+        backgroundColor: Colors.transparent,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black), // Dark icons
-        titleTextStyle: const TextStyle(color: Colors.black, fontSize: 20, fontWeight: FontWeight.bold),
+        iconTheme: IconThemeData(
+          color: _currentBackgroundColor.computeLuminance() > 0.5
+              ? Colors.black
+              : Colors.white,
+        ),
+        titleTextStyle: TextStyle(
+          color: _currentBackgroundColor.computeLuminance() > 0.5
+              ? Colors.black
+              : Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
       ),
-      extendBodyBehindAppBar: true, // Body goes behind AppBar
 
-      // Use STACK to layer UI on top of AR
       body: Stack(
         children: [
-          // BOTTOM LAYER: The AR Model Viewer
-          ModelViewer(
-            // Key forces reload when step changes
-            key: ValueKey(currentFile.path), 
-            src: 'file://${currentFile.path}', // Load local file
-            ar: true,
-            cameraControls: true,
-            autoRotate: false, // User controls rotation
+          // 1. BACKGROUND
+          Container(
+            color: _currentBackgroundColor,
+            width: double.infinity,
+            height: double.infinity,
           ),
 
-          // TOP LAYER: The Controls Overlay
+          // 2. MODEL VIEWER
+          ModelViewer(
+            key: ValueKey(currentFile.path),
+            src: 'file://${currentFile.path}',
+            ar: true,
+            cameraControls: true,
+            autoRotate: false,
+            backgroundColor: Colors.transparent,
+          ),
+
+          // 3. COLOR PALETTE (Top)
           Positioned(
-            bottom: 0,
+            top: 100,
             left: 0,
             right: 0,
+            child: SizedBox(
+              height: 50,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: _palette.length,
+                itemBuilder: (context, index) {
+                  final color = _palette[index];
+                  final isSelected = _currentBackgroundColor == color;
+
+                  return GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _currentBackgroundColor = color;
+                      });
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 12),
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isSelected
+                              ? Colors.blueAccent
+                              : Colors.grey.shade400,
+                          width: isSelected ? 3 : 1,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: isSelected
+                          ? Icon(
+                              Icons.check,
+                              size: 20,
+                              color: color.computeLuminance() > 0.5
+                                  ? Colors.black
+                                  : Colors.white,
+                            )
+                          : null,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+
+          // 4. CONTROLS OVERLAY (Lifted High for AR Button Space)
+          Positioned(
+            left: 20,
+            right: 20,
+            bottom: 80, // <--- LIFTED UP SIGNIFICANTLY
             child: Container(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6), // Semi-transparent dark background
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(24),
-                  topRight: Radius.circular(24),
-                ),
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(30), // Pill shape
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -132,47 +213,56 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                     currentStepName,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 20,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  
-                  // File name (optional, smaller text)
-                  Text(
-                    currentFile.path.split('/').last,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                  
-                  const SizedBox(height: 20),
 
-                  // Control Buttons
+                  const SizedBox(height: 16),
+
+                  // Buttons Row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // PREVIOUS BUTTON
+                      // PREV BUTTON
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white24,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          shape: const StadiumBorder(), // Rounded ends
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 12,
+                          ),
                         ),
-                        onPressed: _currentIndex > 0 ? _previousStep : null, // Disable if at start
-                        icon: const Icon(Icons.arrow_back),
-                        label: const Text("Previous"),
+                        onPressed: _currentIndex > 0 ? _previousStep : null,
+                        icon: const Icon(Icons.arrow_back, size: 18),
+                        label: const Text("Prev"),
                       ),
 
+                      const SizedBox(width: 10),
+
                       // NEXT BUTTON
-                      ElevatedButton.icon(
+                      ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange, // Highlight "Next"
+                          backgroundColor: Colors.orange,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          shape: const StadiumBorder(), // Rounded ends
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 12,
+                          ),
                         ),
-                        // If at end, show "Finish" or disable
-                        onPressed: _currentIndex < _steps.length - 1 ? _nextStep : null,
-                        icon: const Icon(Icons.arrow_forward),
-                        label: const Text("Next"),
+                        onPressed: _currentIndex < _steps.length - 1
+                            ? _nextStep
+                            : null,
+                        child: Row(
+                          children: const [
+                            Text("Next"),
+                            SizedBox(width: 8),
+                            Icon(Icons.arrow_forward, size: 18),
+                          ],
+                        ),
                       ),
                     ],
                   ),
