@@ -1,14 +1,15 @@
-// lib/screens/upload_page.dart
-
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:model_viewer_plus/model_viewer_plus.dart';
 
+// Ensure these imports match your actual file structure
 import 'furniture_assembly_page.dart';
 import 'annotate_pdf_page.dart';
+import 'part_selection_page.dart';
+import '../models/part.dart';
 
 class UploadPage extends StatefulWidget {
   const UploadPage({super.key});
@@ -18,22 +19,20 @@ class UploadPage extends StatefulWidget {
 }
 
 class _UploadPageState extends State<UploadPage> {
-  // ⚠️ YOUR PC IP
+  // ⚠️ YOUR PC IP (Check if this changed)
   final String _uploadUrl = "http://192.168.1.32:8000/upload_image";
 
   final TextEditingController _furnitureNameController =
       TextEditingController();
 
-  // --- CHANGE 1: List of files instead of single file ---
-  List<File> _pickedFiles = [];
+  List<File> _pickedFiles = []; // Assembly steps
+  List<AssemblyPart> _detectedParts = []; // Hardware
 
   bool _isUploading = false;
   String _responseMessage = "";
-
-  // Track upload progress (e.g., "Uploading 1 of 3...")
   int _currentUploadIndex = 0;
 
-  // --- PICK IMAGE (Single add) ---
+  // --- 1. PICK IMAGE ---
   Future<void> _pickImage() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.image,
@@ -46,8 +45,8 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // --- PICK PDF (Batch add) ---
-  Future<void> _pickPdf() async {
+  // --- 2. WIZARD FLOW ---
+  Future<void> _pickPdfAndStartWizard() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
@@ -56,32 +55,52 @@ class _UploadPageState extends State<UploadPage> {
     if (result != null) {
       File pdfFile = File(result.files.single.path!);
 
-      // Expect a LIST of files back
-      final List<File>? croppedImages = await Navigator.push(
+      // PHASE 1: HARDWARE SCANNING
+      final List<AssemblyPart>? scannedParts = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => PartSelectionPage(pdfFile: pdfFile),
+        ),
+      );
+
+      if (scannedParts != null) {
+        setState(() => _detectedParts = scannedParts);
+      }
+
+      // PHASE 2: ASSEMBLY STEPS
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Hardware saved! Now crop the Assembly Steps."),
+        ),
+      );
+
+      final List<File>? croppedSteps = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => AnnotatePdfPage(pdfFile: pdfFile),
         ),
       );
 
-      if (croppedImages != null && croppedImages.isNotEmpty) {
+      if (croppedSteps != null && croppedSteps.isNotEmpty) {
         setState(() {
-          _pickedFiles.addAll(croppedImages);
+          _pickedFiles.addAll(croppedSteps);
           _responseMessage = "";
         });
       }
     }
   }
 
-  // --- UPLOAD LOGIC (Sequential) ---
+  // --- UPLOAD LOGIC ---
   Future<void> _uploadAllFiles() async {
     if (_pickedFiles.isEmpty) return;
 
     final String furnitureName = _furnitureNameController.text.trim();
     if (furnitureName.isEmpty) {
-      setState(() {
-        _responseMessage = "Error: Please enter a furniture name.";
-      });
+      setState(
+        () => _responseMessage = "Error: Please enter a furniture name.",
+      );
       return;
     }
 
@@ -91,7 +110,7 @@ class _UploadPageState extends State<UploadPage> {
     });
 
     try {
-      // Loop through all files in order
+      // 1. Generate Models (GLB)
       for (int i = 0; i < _pickedFiles.length; i++) {
         setState(() {
           _responseMessage =
@@ -100,31 +119,31 @@ class _UploadPageState extends State<UploadPage> {
         });
 
         File fileToUpload = _pickedFiles[i];
-
-        // 1. Prepare Request
         var request = http.MultipartRequest("POST", Uri.parse(_uploadUrl));
         request.files.add(
           await http.MultipartFile.fromPath('file', fileToUpload.path),
         );
 
-        print("Uploading file $i...");
         var streamedResponse = await request.send();
         var response = await http.Response.fromStream(streamedResponse);
 
         if (response.statusCode == 200) {
-          // 2. Save with INDEX in filename (model_00.glb, model_01.glb)
-          // This ensures the Assembly Player plays them in correct order.
           await _saveGlbToFolder(response.bodyBytes, furnitureName, i);
         } else {
           throw Exception("Server Error on file $i: ${response.statusCode}");
         }
       }
 
-      // Done!
+      // 2. Save Hardware List
+      if (_detectedParts.isNotEmpty) {
+        await _savePartsJsonToFolder(furnitureName);
+      }
+
       setState(() {
         _isUploading = false;
-        _responseMessage = "Success! Generated ${_pickedFiles.length} models.";
-        _pickedFiles.clear(); // Clear list after success
+        _responseMessage = "Success! Guide Created.";
+        _pickedFiles.clear();
+        _detectedParts.clear();
       });
     } catch (e) {
       print("Error: $e");
@@ -142,21 +161,54 @@ class _UploadPageState extends State<UploadPage> {
   ) async {
     final Directory appDir = await getApplicationDocumentsDirectory();
     final Directory furnitureDir = Directory("${appDir.path}/$folderName");
-    if (!await furnitureDir.exists()) {
+    if (!await furnitureDir.exists())
       await furnitureDir.create(recursive: true);
-    }
 
-    // Naming convention: model_00_timestamp.glb
     String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    String indexPrefix = index.toString().padLeft(2, '0'); // "00", "01", "02"
+    String indexPrefix = index.toString().padLeft(2, '0');
     String fileName = "model_${indexPrefix}_$timestamp.glb";
 
     final File localFile = File("${furnitureDir.path}/$fileName");
     await localFile.writeAsBytes(bytes);
-    print("Saved: ${localFile.path}");
   }
 
-  // --- REORDER LOGIC ---
+  Future<void> _savePartsJsonToFolder(String folderName) async {
+    try {
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final Directory furnitureDir = Directory("${appDir.path}/$folderName");
+      if (!await furnitureDir.exists())
+        await furnitureDir.create(recursive: true);
+
+      List<Map<String, dynamic>> cleanPartsList = [];
+
+      for (int i = 0; i < _detectedParts.length; i++) {
+        AssemblyPart part = _detectedParts[i];
+
+        // Save Image File
+        String partFileName = "part_${i}_${part.id}.png";
+        File partImageFile = File("${furnitureDir.path}/$partFileName");
+
+        // ⚠️ FIXED: Now uses the new .imageBytes getter we added to the model
+        if (part.imageBytes.isNotEmpty) {
+          await partImageFile.writeAsBytes(part.imageBytes);
+        }
+
+        // Save Metadata
+        cleanPartsList.add({
+          "id": part.id,
+          "totalQuantity": part.totalQuantity,
+          "usedQuantity": 0,
+          "imageFileName": partFileName,
+        });
+      }
+
+      final partsFile = File('${furnitureDir.path}/parts.json');
+      await partsFile.writeAsString(jsonEncode(cleanPartsList));
+    } catch (e) {
+      print("Error saving parts: $e");
+    }
+  }
+
   void _onReorder(int oldIndex, int newIndex) {
     setState(() {
       if (newIndex > oldIndex) newIndex -= 1;
@@ -171,7 +223,6 @@ class _UploadPageState extends State<UploadPage> {
       appBar: AppBar(title: const Text('Create Assembly Guide')),
       body: Column(
         children: [
-          // Top Section: Inputs
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
@@ -191,32 +242,56 @@ class _UploadPageState extends State<UploadPage> {
                     Expanded(
                       child: OutlinedButton.icon(
                         icon: const Icon(Icons.image),
-                        label: const Text("Add Image"),
+                        label: const Text("Add Single Image"),
                         onPressed: _pickImage,
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: OutlinedButton.icon(
+                      child: ElevatedButton.icon(
                         icon: const Icon(Icons.picture_as_pdf),
-                        label: const Text("Add PDF"),
-                        onPressed: _pickPdf,
+                        label: const Text("Scan PDF Guide"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _pickPdfAndStartWizard,
                       ),
                     ),
                   ],
                 ),
+                if (_detectedParts.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(top: 10),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.check_circle,
+                          color: Colors.green,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          "Hardware List: ${_detectedParts.length} items ready",
+                          style: TextStyle(color: Colors.green.shade900),
+                        ),
+                      ],
+                    ),
+                  ),
               ],
             ),
           ),
-
           const Divider(),
-
-          // Middle Section: Reorderable List
           Expanded(
             child: _pickedFiles.isEmpty
                 ? const Center(
                     child: Text(
-                      "No images selected.\nAdd images to create steps.",
+                      "No steps yet.\nTap 'Scan PDF Guide' to start.",
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
@@ -225,10 +300,10 @@ class _UploadPageState extends State<UploadPage> {
                     header: const Padding(
                       padding: EdgeInsets.all(8.0),
                       child: Text(
-                        "Drag to reorder • Swipe right to delete",
+                        "Assembly Steps Order",
                         style: TextStyle(
-                          fontWeight: FontWeight.bold,
                           color: Colors.grey,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
@@ -236,68 +311,23 @@ class _UploadPageState extends State<UploadPage> {
                     onReorder: _onReorder,
                     itemBuilder: (context, index) {
                       final file = _pickedFiles[index];
-
-                      // We wrap the ListTile in a Dismissible widget
-                      return Dismissible(
-                        // Key must be unique for every file path
+                      return ListTile(
                         key: ValueKey(file.path),
-
-                        // Allow swiping only from Left to Right (Start to End)
-                        direction: DismissDirection.startToEnd,
-
-                        // What happens when you swipe
-                        onDismissed: (direction) {
-                          setState(() {
-                            _pickedFiles.removeAt(index);
-                          });
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("Step ${index + 1} deleted"),
-                            ),
-                          );
-                        },
-
-                        // The red background behind the item
-                        background: Container(
-                          color: Colors.red,
-                          alignment: Alignment.centerLeft,
-                          padding: const EdgeInsets.only(left: 20),
-                          child: const Icon(Icons.delete, color: Colors.white),
+                        leading: Image.file(
+                          file,
+                          width: 50,
+                          height: 50,
+                          fit: BoxFit.cover,
                         ),
-
-                        // The actual list item
-                        child: ListTile(
-                          key: ValueKey(file.path), // Provide key here too
-                          leading: Container(
-                            width: 50,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey.shade300),
-                              borderRadius: BorderRadius.circular(4),
-                              image: DecorationImage(
-                                image: FileImage(file),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                          title: Text("Step ${index + 1}"),
-                          // We remove the drag handle icon because the whole tile is draggable,
-                          // and it looks cleaner with the swipe action.
-                          trailing: const Icon(
-                            Icons.drag_handle,
-                            color: Colors.grey,
-                          ),
-                        ),
+                        title: Text("Step ${index + 1}"),
+                        trailing: const Icon(Icons.drag_handle),
                       );
                     },
                   ),
           ),
-
-          // Bottom Section: Upload Button
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: Colors.white,
               boxShadow: [
                 BoxShadow(
@@ -314,13 +344,11 @@ class _UploadPageState extends State<UploadPage> {
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Text(
                       _responseMessage,
-                      textAlign: TextAlign.center,
                       style: TextStyle(
                         color: _isUploading ? Colors.blue : Colors.green,
                       ),
                     ),
                   ),
-
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
@@ -338,14 +366,11 @@ class _UploadPageState extends State<UploadPage> {
                             width: 20,
                             child: CircularProgressIndicator(
                               color: Colors.white,
-                              strokeWidth: 2,
                             ),
                           )
-                        : Text("Generate ${_pickedFiles.length} Models"),
+                        : Text("Generate Guide (${_pickedFiles.length} Steps)"),
                   ),
                 ),
-
-                // View Button (Only if done uploading and name is filled)
                 if (!_isUploading && _responseMessage.contains("Success"))
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
