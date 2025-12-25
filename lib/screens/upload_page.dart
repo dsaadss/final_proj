@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter_archive/flutter_archive.dart'; // ⚠️ NEW LIBRARY
 
-// Ensure these imports match your actual file structure
 import 'furniture_assembly_page.dart';
 import 'annotate_pdf_page.dart';
 import 'part_selection_page.dart';
@@ -25,25 +25,21 @@ class _UploadPageState extends State<UploadPage> {
   final TextEditingController _furnitureNameController =
       TextEditingController();
 
-  // ⚠️ Changed: We track AssemblyStep (File + PageNum)
   List<AssemblyStep> _pickedSteps = [];
   List<AssemblyPart> _detectedParts = [];
-
-  // ⚠️ Track original PDF to save it later
   File? _originalPdfFile;
 
   bool _isUploading = false;
   String _responseMessage = "";
   int _currentUploadIndex = 0;
 
-  // --- 1. PICK IMAGE (Single Manual Add) ---
+  // --- 1. PICK IMAGE ---
   Future<void> _pickImage() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.image,
     );
     if (result != null) {
       setState(() {
-        // For single images, we assume Page 1 since there is no PDF
         _pickedSteps.add(
           AssemblyStep(
             imageFile: File(result.files.single.path!),
@@ -65,28 +61,23 @@ class _UploadPageState extends State<UploadPage> {
     if (result != null) {
       _originalPdfFile = File(result.files.single.path!);
 
-      // PHASE 1: HARDWARE SCANNING
+      // Phase 1: Hardware
       final List<AssemblyPart>? scannedParts = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => PartSelectionPage(pdfFile: _originalPdfFile!),
         ),
       );
+      if (scannedParts != null) setState(() => _detectedParts = scannedParts);
 
-      if (scannedParts != null) {
-        setState(() => _detectedParts = scannedParts);
-      }
-
-      // PHASE 2: ASSEMBLY STEPS
+      // Phase 2: Steps
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Hardware saved! Now crop the Assembly Steps."),
         ),
       );
 
-      // ⚠️ Receive List<AssemblyStep> from the new Annotate Page
       final List<AssemblyStep>? croppedSteps = await Navigator.push(
         context,
         MaterialPageRoute(
@@ -121,7 +112,7 @@ class _UploadPageState extends State<UploadPage> {
     });
 
     try {
-      // 1. Generate Models (GLB)
+      // 1. Process Steps (Get 3D Models)
       for (int i = 0; i < _pickedSteps.length; i++) {
         setState(() {
           _responseMessage =
@@ -129,7 +120,6 @@ class _UploadPageState extends State<UploadPage> {
           _currentUploadIndex = i;
         });
 
-        // Use .imageFile to get the actual file from our Step object
         File fileToUpload = _pickedSteps[i].imageFile;
         var request = http.MultipartRequest("POST", Uri.parse(_uploadUrl));
         request.files.add(
@@ -140,21 +130,19 @@ class _UploadPageState extends State<UploadPage> {
         var response = await http.Response.fromStream(streamedResponse);
 
         if (response.statusCode == 200) {
-          await _saveGlbToFolder(response.bodyBytes, furnitureName, i);
+          // ⚠️ NEW: Use flutter_archive logic
+          await _unzipAndSaveModels(response.bodyBytes, furnitureName, i);
         } else {
           throw Exception("Server Error on file $i: ${response.statusCode}");
         }
       }
 
-      // 2. Save Hardware List
-      if (_detectedParts.isNotEmpty) {
+      // 2. Save Hardware
+      if (_detectedParts.isNotEmpty)
         await _savePartsJsonToFolder(furnitureName);
-      }
 
-      // 3. ⚠️ NEW: Save PDF & Page Map
-      if (_originalPdfFile != null) {
-        await _savePdfAndMap(furnitureName);
-      }
+      // 3. Save PDF
+      if (_originalPdfFile != null) await _savePdfAndMap(furnitureName);
 
       setState(() {
         _isUploading = false;
@@ -171,26 +159,64 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // --- SAVE HELPERS ---
-
-  Future<void> _saveGlbToFolder(
-    List<int> bytes,
+  // --- ⚠️ NEW UNZIP LOGIC (flutter_archive) ---
+  Future<void> _unzipAndSaveModels(
+    List<int> zipBytes,
     String folderName,
-    int index,
+    int stepIndex,
   ) async {
-    final Directory appDir = await getApplicationDocumentsDirectory();
-    final Directory furnitureDir = Directory("${appDir.path}/$folderName");
-    if (!await furnitureDir.exists())
-      await furnitureDir.create(recursive: true);
+    try {
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final Directory furnitureDir = Directory("${appDir.path}/$folderName");
+      if (!await furnitureDir.exists())
+        await furnitureDir.create(recursive: true);
 
-    String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    String indexPrefix = index.toString().padLeft(2, '0');
-    String fileName = "model_${indexPrefix}_$timestamp.glb";
+      // 1. Write zipBytes to a temporary file (flutter_archive needs a File)
+      final Directory tempDir = await getTemporaryDirectory();
+      final File tempZipFile = File('${tempDir.path}/temp_step_$stepIndex.zip');
+      await tempZipFile.writeAsBytes(zipBytes);
 
-    final File localFile = File("${furnitureDir.path}/$fileName");
-    await localFile.writeAsBytes(bytes);
+      // 2. Create a temp folder to extract into
+      final Directory tempExtractDir = Directory(
+        '${tempDir.path}/temp_extract_$stepIndex',
+      );
+      if (await tempExtractDir.exists())
+        await tempExtractDir.delete(recursive: true);
+      await tempExtractDir.create();
+
+      // 3. Extract!
+      await ZipFile.extractToDirectory(
+        zipFile: tempZipFile,
+        destinationDir: tempExtractDir,
+      );
+
+      // 4. Rename and Move files to the Furniture Folder
+      // We expect files like "model_white.glb", "model_black.glb"
+      // We rename them to "step_00_model_white.glb"
+      String indexPrefix = stepIndex.toString().padLeft(2, '0');
+
+      final List<FileSystemEntity> extractedFiles = tempExtractDir.listSync();
+
+      for (var file in extractedFiles) {
+        if (file is File) {
+          String fileName = file.path.split(Platform.pathSeparator).last;
+          String newFileName = "step_${indexPrefix}_$fileName";
+
+          await file.copy('${furnitureDir.path}/$newFileName');
+          print("✅ Saved: $newFileName");
+        }
+      }
+
+      // 5. Cleanup Temp Files
+      await tempZipFile.delete();
+      await tempExtractDir.delete(recursive: true);
+    } catch (e) {
+      print("❌ Error unzipping: $e");
+      throw Exception("Failed to unzip models");
+    }
   }
 
+  // --- OTHER SAVERS (Unchanged) ---
   Future<void> _savePartsJsonToFolder(String folderName) async {
     try {
       final Directory appDir = await getApplicationDocumentsDirectory();
@@ -199,15 +225,13 @@ class _UploadPageState extends State<UploadPage> {
         await furnitureDir.create(recursive: true);
 
       List<Map<String, dynamic>> cleanPartsList = [];
-
       for (int i = 0; i < _detectedParts.length; i++) {
         AssemblyPart part = _detectedParts[i];
         String partFileName = "part_${i}_${part.id}.png";
         File partImageFile = File("${furnitureDir.path}/$partFileName");
 
-        if (part.imageBytes.isNotEmpty) {
+        if (part.imageBytes.isNotEmpty)
           await partImageFile.writeAsBytes(part.imageBytes);
-        }
 
         cleanPartsList.add({
           "id": part.id,
@@ -224,7 +248,6 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // ⚠️ NEW: Save the Guide PDF and the Steps Map
   Future<void> _savePdfAndMap(String folderName) async {
     try {
       final Directory appDir = await getApplicationDocumentsDirectory();
@@ -232,11 +255,9 @@ class _UploadPageState extends State<UploadPage> {
       if (!await furnitureDir.exists())
         await furnitureDir.create(recursive: true);
 
-      // A. Copy the PDF
       final String newPdfPath = "${furnitureDir.path}/guide.pdf";
       await _originalPdfFile!.copy(newPdfPath);
 
-      // B. Create the Map
       List<Map<String, dynamic>> stepMap = [];
       for (int i = 0; i < _pickedSteps.length; i++) {
         stepMap.add({"stepIndex": i, "pdfPage": _pickedSteps[i].pageNumber});
@@ -244,7 +265,6 @@ class _UploadPageState extends State<UploadPage> {
 
       final File mapFile = File("${furnitureDir.path}/steps.json");
       await mapFile.writeAsString(jsonEncode(stepMap));
-      print("✅ Saved PDF and Map!");
     } catch (e) {
       print("Error saving PDF map: $e");
     }

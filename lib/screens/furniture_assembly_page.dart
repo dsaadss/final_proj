@@ -17,15 +17,16 @@ class FurnitureAssemblyPage extends StatefulWidget {
 }
 
 class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
-  // --- 3D STEPS DATA ---
-  List<File> _steps = [];
+  // --- 3D DATA ---
+  List<File> _steps = []; // Only stores the "White" (default) files
   int _currentIndex = 0;
   bool _isLoading = true;
 
-  // --- HARDWARE PARTS DATA ---
-  List<AssemblyPart> _projectParts = [];
+  // 🆕 COLOR VARIANT STATE
+  String _selectedVariant = "white"; // "white", "black", "wood"
 
-  // --- PDF DATA ---
+  // --- HARDWARE & PDF DATA ---
+  List<AssemblyPart> _projectParts = [];
   PdfController? _pdfController;
   Map<int, int> _stepToPageMap = {};
 
@@ -42,7 +43,7 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     Colors.grey.shade200,
     Colors.white,
     Colors.black,
-    const Color(0xFF1A1A1A),
+    const Color(0xFF1A1A1A), // Dark Grey
     Colors.blue.shade100,
     Colors.green.shade100,
     Colors.orange.shade100,
@@ -63,8 +64,11 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   Future<void> _loadAssemblySteps() async {
     try {
       final List<FileSystemEntity> entities = widget.folder.listSync();
+
+      // 🆕 FILTER: Only load the 'white' (default) models into the list
+      // We will infer the names of black/wood models from these.
       final List<File> glbFiles = entities
-          .where((e) => e is File && e.path.endsWith('.glb'))
+          .where((e) => e is File && e.path.endsWith('_white.glb'))
           .cast<File>()
           .toList();
 
@@ -86,7 +90,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
       if (await partsFile.exists()) {
         final String content = await partsFile.readAsString();
         final List<dynamic> jsonList = jsonDecode(content);
-
         setState(() {
           _projectParts = jsonList.map((j) {
             final part = AssemblyPart.fromJson(j);
@@ -96,40 +99,34 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
         });
       }
     } catch (e) {
-      print("Error loading parts.json: $e");
+      print("Error parts: $e");
     }
   }
 
   Future<void> _loadPdfAndMetadata() async {
     final pdfFile = File('${widget.folder.path}/guide.pdf');
-
     if (await pdfFile.exists()) {
-      final controller = PdfController(
-        document: PdfDocument.openFile(pdfFile.path),
-      );
-
       setState(() {
-        _pdfController = controller;
+        _pdfController = PdfController(
+          document: PdfDocument.openFile(pdfFile.path),
+        );
         _hasPdf = true;
       });
     }
-
     final metaFile = File('${widget.folder.path}/steps.json');
     if (await metaFile.exists()) {
       try {
-        final String content = await metaFile.readAsString();
+        final content = await metaFile.readAsString();
         final List<dynamic> jsonList = jsonDecode(content);
-
         final Map<int, int> tempMap = {};
         for (var item in jsonList) {
           if (item['stepIndex'] != null && item['pdfPage'] != null) {
             tempMap[item['stepIndex']] = item['pdfPage'];
           }
         }
-
         setState(() => _stepToPageMap = tempMap);
       } catch (e) {
-        print("Error parsing steps.json: $e");
+        print("Error steps.json: $e");
       }
     }
   }
@@ -137,7 +134,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   void _jumpPdfToCurrentStep() {
     final int? page = _stepToPageMap[_currentIndex];
     if (page == null || _pdfController == null) return;
-
     Future.delayed(const Duration(milliseconds: 300), () {
       if (!mounted) return;
       _pdfController!.jumpToPage(page);
@@ -145,13 +141,8 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   }
 
   void _jumpToStep(int index) {
-    setState(() {
-      _currentIndex = index;
-    });
-
-    if (_isPdfVisible) {
-      _jumpPdfToCurrentStep();
-    }
+    setState(() => _currentIndex = index);
+    if (_isPdfVisible) _jumpPdfToCurrentStep();
   }
 
   void _nextStep() {
@@ -172,6 +163,20 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     );
   }
 
+  // 🆕 HELPER: Get correct file based on color selection
+  File _getCurrentVariantFile() {
+    final File baseFile = _steps[_currentIndex];
+    // Replace "_white.glb" with "_black.glb" or "_wood.glb"
+    String newPath = baseFile.path.replaceAll(
+      '_white.glb',
+      '_$_selectedVariant.glb',
+    );
+
+    File variantFile = File(newPath);
+    // Fallback to base file if variant doesn't exist
+    return variantFile.existsSync() ? variantFile : baseFile;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading)
@@ -179,7 +184,17 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     if (_steps.isEmpty)
       return const Scaffold(body: Center(child: Text("No steps found.")));
 
-    final File currentFile = _steps[_currentIndex];
+    final File currentFile = _getCurrentVariantFile();
+
+    // THE RELIABLE GOOGLE VIEWER
+    Widget modelView = ModelViewer(
+      key: ValueKey(currentFile.path), // Forces reload when file changes
+      src: 'file://${currentFile.path}',
+      ar: true,
+      cameraControls: true,
+      autoRotate: false,
+      backgroundColor: Colors.transparent, // Let container color show through
+    );
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -202,30 +217,19 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
       ),
       body: Stack(
         children: [
-          // 1. BACKGROUND
-          Container(color: _currentBackgroundColor),
+          // 1. BACKGROUND LAYER (Controls the contrast)
+          Positioned.fill(child: Container(color: _currentBackgroundColor)),
 
-          // 2. MAIN CONTENT (Vertical Split Logic)
+          // 2. MAIN CONTENT (Split Logic)
           Positioned.fill(
             child: _isSplitMode
                 ? Column(
-                    // ⚠️ CHANGED TO COLUMN (Vertical Split)
                     children: [
                       // TOP: 3D MODEL
-                      Expanded(
-                        flex: 1, // Equal height
-                        child: ModelViewer(
-                          key: ValueKey(currentFile.path),
-                          src: 'file://${currentFile.path}',
-                          ar: true,
-                          cameraControls: true,
-                          autoRotate: false,
-                          backgroundColor: Colors.transparent,
-                        ),
-                      ),
+                      Expanded(flex: 1, child: modelView),
                       // BOTTOM: PDF PANEL
                       Expanded(
-                        flex: 1, // Equal height
+                        flex: 1,
                         child: Container(
                           color: Colors.white,
                           child: PdfView(
@@ -236,22 +240,15 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                       ),
                     ],
                   )
-                : ModelViewer(
-                    key: ValueKey(currentFile.path),
-                    src: 'file://${currentFile.path}',
-                    ar: true,
-                    cameraControls: true,
-                    autoRotate: false,
-                    backgroundColor: Colors.transparent,
-                  ),
+                : modelView, // Full screen model
           ),
 
-          // 3. COLOR PALETTE (Hidden in split mode to save space)
+          // 3. COLOR PALETTE (Background) - Top Left
           if (!_isSplitMode)
             Positioned(
               top: 110,
               left: 0,
-              right: 0,
+              right: 80, // Leave space for variant buttons on right
               child: SizedBox(
                 height: 50,
                 child: ListView.builder(
@@ -279,9 +276,9 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
+                              color: Colors.black12,
                               blurRadius: 4,
-                              offset: const Offset(0, 2),
+                              offset: Offset(0, 2),
                             ),
                           ],
                         ),
@@ -301,7 +298,23 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
               ),
             ),
 
-          // 4. NAVIGATION ARROWS
+          // 🆕 4. VARIANT SELECTOR (Wood/White/Black) - Top Right
+          if (!_isSplitMode)
+            Positioned(
+              top: 110,
+              right: 16,
+              child: Column(
+                children: [
+                  _variantButton("white", Colors.white, "Original"),
+                  const SizedBox(height: 10),
+                  _variantButton("wood", const Color(0xFF8B4513), "Wood"),
+                  const SizedBox(height: 10),
+                  _variantButton("black", const Color(0xFF282828), "Black"),
+                ],
+              ),
+            ),
+
+          // 5. NAVIGATION ARROWS
           Positioned(
             left: 0,
             right: 0,
@@ -333,21 +346,18 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
             ),
           ),
 
-          // 5. SMALLER ACTION BUTTONS (Bottom Left)
-          // Replaced wide buttons with compact Round buttons
+          // 6. ACTION BUTTONS (Compact Round Icons)
           Positioned(
             left: 20,
             bottom: 20,
             child: Row(
               children: [
-                // MANUAL BUTTON
                 if (_hasPdf && !_isSplitMode) ...[
                   FloatingActionButton(
                     heroTag: "pdf_btn",
-                    mini: true, // Smaller size
+                    mini: true,
                     backgroundColor: Colors.white,
                     foregroundColor: Colors.blue,
-                    tooltip: "Show Manual Popup",
                     onPressed: () {
                       if (!_isPdfReady) return;
                       setState(() => _isPdfVisible = !_isPdfVisible);
@@ -359,15 +369,12 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                   ),
                   const SizedBox(width: 12),
                 ],
-
-                // SPLIT VIEW BUTTON
                 if (_hasPdf) ...[
                   FloatingActionButton(
                     heroTag: "split_btn",
-                    mini: true, // Smaller size
+                    mini: true,
                     backgroundColor: Colors.grey.shade800,
                     foregroundColor: Colors.white,
-                    tooltip: "Toggle Split View",
                     onPressed: () {
                       if (!_isPdfReady) return;
                       setState(() {
@@ -384,14 +391,11 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                   ),
                   const SizedBox(width: 12),
                 ],
-
-                // PARTS BUTTON
                 if (_projectParts.isNotEmpty)
                   FloatingActionButton(
                     heroTag: "parts_btn",
                     backgroundColor: Colors.red[700],
                     foregroundColor: Colors.white,
-                    tooltip: "Hardware Parts",
                     onPressed: _openPartsTracker,
                     child: const Icon(Icons.handyman),
                   ),
@@ -399,7 +403,7 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
             ),
           ),
 
-          // 6. POPUP MANUAL (Only when NOT in split mode)
+          // 7. POPUP MANUAL (Non-Split Mode)
           if (_isPdfReady && _isPdfVisible && !_isSplitMode)
             Positioned.fill(
               child: Stack(
@@ -449,6 +453,45 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  // 🆕 BUTTON HELPER
+  Widget _variantButton(String variant, Color color, String tooltip) {
+    bool isSelected = _selectedVariant == variant;
+    return GestureDetector(
+      onTap: () => setState(() => _selectedVariant = variant),
+      child: Tooltip(
+        message: tooltip,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isSelected ? Colors.blueAccent : Colors.grey.shade400,
+              width: isSelected ? 3 : 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                blurRadius: 4,
+                color: Colors.black26,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: isSelected
+              ? Icon(
+                  Icons.check,
+                  size: 20,
+                  color: color.computeLuminance() > 0.5
+                      ? Colors.black
+                      : Colors.white,
+                )
+              : null,
+        ),
       ),
     );
   }

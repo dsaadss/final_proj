@@ -41,6 +41,8 @@ dependencies:
   pdfx: ^2.9.2
   image: ^4.6.0
   crop_image: ^1.0.16
+  webview_flutter: ^4.7.0
+  flutter_archive: ^6.0.4
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -70,7 +72,6 @@ flutter:
   assets:
     - assets/images/
     - assets/models/
-
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
