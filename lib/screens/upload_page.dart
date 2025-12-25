@@ -19,27 +19,37 @@ class UploadPage extends StatefulWidget {
 }
 
 class _UploadPageState extends State<UploadPage> {
-  // ⚠️ YOUR PC IP (Check if this changed)
+  // ⚠️ YOUR PC IP
   final String _uploadUrl = "http://192.168.1.32:8000/upload_image";
 
   final TextEditingController _furnitureNameController =
       TextEditingController();
 
-  List<File> _pickedFiles = []; // Assembly steps
-  List<AssemblyPart> _detectedParts = []; // Hardware
+  // ⚠️ Changed: We track AssemblyStep (File + PageNum)
+  List<AssemblyStep> _pickedSteps = [];
+  List<AssemblyPart> _detectedParts = [];
+
+  // ⚠️ Track original PDF to save it later
+  File? _originalPdfFile;
 
   bool _isUploading = false;
   String _responseMessage = "";
   int _currentUploadIndex = 0;
 
-  // --- 1. PICK IMAGE ---
+  // --- 1. PICK IMAGE (Single Manual Add) ---
   Future<void> _pickImage() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.image,
     );
     if (result != null) {
       setState(() {
-        _pickedFiles.add(File(result.files.single.path!));
+        // For single images, we assume Page 1 since there is no PDF
+        _pickedSteps.add(
+          AssemblyStep(
+            imageFile: File(result.files.single.path!),
+            pageNumber: 1,
+          ),
+        );
         _responseMessage = "";
       });
     }
@@ -53,13 +63,13 @@ class _UploadPageState extends State<UploadPage> {
     );
 
     if (result != null) {
-      File pdfFile = File(result.files.single.path!);
+      _originalPdfFile = File(result.files.single.path!);
 
       // PHASE 1: HARDWARE SCANNING
       final List<AssemblyPart>? scannedParts = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => PartSelectionPage(pdfFile: pdfFile),
+          builder: (context) => PartSelectionPage(pdfFile: _originalPdfFile!),
         ),
       );
 
@@ -76,16 +86,17 @@ class _UploadPageState extends State<UploadPage> {
         ),
       );
 
-      final List<File>? croppedSteps = await Navigator.push(
+      // ⚠️ Receive List<AssemblyStep> from the new Annotate Page
+      final List<AssemblyStep>? croppedSteps = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => AnnotatePdfPage(pdfFile: pdfFile),
+          builder: (context) => AnnotatePdfPage(pdfFile: _originalPdfFile!),
         ),
       );
 
       if (croppedSteps != null && croppedSteps.isNotEmpty) {
         setState(() {
-          _pickedFiles.addAll(croppedSteps);
+          _pickedSteps.addAll(croppedSteps);
           _responseMessage = "";
         });
       }
@@ -94,7 +105,7 @@ class _UploadPageState extends State<UploadPage> {
 
   // --- UPLOAD LOGIC ---
   Future<void> _uploadAllFiles() async {
-    if (_pickedFiles.isEmpty) return;
+    if (_pickedSteps.isEmpty) return;
 
     final String furnitureName = _furnitureNameController.text.trim();
     if (furnitureName.isEmpty) {
@@ -111,14 +122,15 @@ class _UploadPageState extends State<UploadPage> {
 
     try {
       // 1. Generate Models (GLB)
-      for (int i = 0; i < _pickedFiles.length; i++) {
+      for (int i = 0; i < _pickedSteps.length; i++) {
         setState(() {
           _responseMessage =
-              "Processing Step ${i + 1} of ${_pickedFiles.length}...";
+              "Processing Step ${i + 1} of ${_pickedSteps.length}...";
           _currentUploadIndex = i;
         });
 
-        File fileToUpload = _pickedFiles[i];
+        // Use .imageFile to get the actual file from our Step object
+        File fileToUpload = _pickedSteps[i].imageFile;
         var request = http.MultipartRequest("POST", Uri.parse(_uploadUrl));
         request.files.add(
           await http.MultipartFile.fromPath('file', fileToUpload.path),
@@ -139,10 +151,15 @@ class _UploadPageState extends State<UploadPage> {
         await _savePartsJsonToFolder(furnitureName);
       }
 
+      // 3. ⚠️ NEW: Save PDF & Page Map
+      if (_originalPdfFile != null) {
+        await _savePdfAndMap(furnitureName);
+      }
+
       setState(() {
         _isUploading = false;
         _responseMessage = "Success! Guide Created.";
-        _pickedFiles.clear();
+        _pickedSteps.clear();
         _detectedParts.clear();
       });
     } catch (e) {
@@ -153,6 +170,8 @@ class _UploadPageState extends State<UploadPage> {
       });
     }
   }
+
+  // --- SAVE HELPERS ---
 
   Future<void> _saveGlbToFolder(
     List<int> bytes,
@@ -183,17 +202,13 @@ class _UploadPageState extends State<UploadPage> {
 
       for (int i = 0; i < _detectedParts.length; i++) {
         AssemblyPart part = _detectedParts[i];
-
-        // Save Image File
         String partFileName = "part_${i}_${part.id}.png";
         File partImageFile = File("${furnitureDir.path}/$partFileName");
 
-        // ⚠️ FIXED: Now uses the new .imageBytes getter we added to the model
         if (part.imageBytes.isNotEmpty) {
           await partImageFile.writeAsBytes(part.imageBytes);
         }
 
-        // Save Metadata
         cleanPartsList.add({
           "id": part.id,
           "totalQuantity": part.totalQuantity,
@@ -209,11 +224,37 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
+  // ⚠️ NEW: Save the Guide PDF and the Steps Map
+  Future<void> _savePdfAndMap(String folderName) async {
+    try {
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final Directory furnitureDir = Directory("${appDir.path}/$folderName");
+      if (!await furnitureDir.exists())
+        await furnitureDir.create(recursive: true);
+
+      // A. Copy the PDF
+      final String newPdfPath = "${furnitureDir.path}/guide.pdf";
+      await _originalPdfFile!.copy(newPdfPath);
+
+      // B. Create the Map
+      List<Map<String, dynamic>> stepMap = [];
+      for (int i = 0; i < _pickedSteps.length; i++) {
+        stepMap.add({"stepIndex": i, "pdfPage": _pickedSteps[i].pageNumber});
+      }
+
+      final File mapFile = File("${furnitureDir.path}/steps.json");
+      await mapFile.writeAsString(jsonEncode(stepMap));
+      print("✅ Saved PDF and Map!");
+    } catch (e) {
+      print("Error saving PDF map: $e");
+    }
+  }
+
   void _onReorder(int oldIndex, int newIndex) {
     setState(() {
       if (newIndex > oldIndex) newIndex -= 1;
-      final File item = _pickedFiles.removeAt(oldIndex);
-      _pickedFiles.insert(newIndex, item);
+      final item = _pickedSteps.removeAt(oldIndex);
+      _pickedSteps.insert(newIndex, item);
     });
   }
 
@@ -288,7 +329,7 @@ class _UploadPageState extends State<UploadPage> {
           ),
           const Divider(),
           Expanded(
-            child: _pickedFiles.isEmpty
+            child: _pickedSteps.isEmpty
                 ? const Center(
                     child: Text(
                       "No steps yet.\nTap 'Scan PDF Guide' to start.",
@@ -307,19 +348,20 @@ class _UploadPageState extends State<UploadPage> {
                         ),
                       ),
                     ),
-                    itemCount: _pickedFiles.length,
+                    itemCount: _pickedSteps.length,
                     onReorder: _onReorder,
                     itemBuilder: (context, index) {
-                      final file = _pickedFiles[index];
+                      final step = _pickedSteps[index];
                       return ListTile(
-                        key: ValueKey(file.path),
+                        key: ValueKey(step.imageFile.path),
                         leading: Image.file(
-                          file,
+                          step.imageFile,
                           width: 50,
                           height: 50,
                           fit: BoxFit.cover,
                         ),
                         title: Text("Step ${index + 1}"),
+                        subtitle: Text("Page ${step.pageNumber}"),
                         trailing: const Icon(Icons.drag_handle),
                       );
                     },
@@ -352,7 +394,7 @@ class _UploadPageState extends State<UploadPage> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: (_pickedFiles.isEmpty || _isUploading)
+                    onPressed: (_pickedSteps.isEmpty || _isUploading)
                         ? null
                         : _uploadAllFiles,
                     style: ElevatedButton.styleFrom(
@@ -368,7 +410,7 @@ class _UploadPageState extends State<UploadPage> {
                               color: Colors.white,
                             ),
                           )
-                        : Text("Generate Guide (${_pickedFiles.length} Steps)"),
+                        : Text("Generate Guide (${_pickedSteps.length} Steps)"),
                   ),
                 ),
                 if (!_isUploading && _responseMessage.contains("Success"))

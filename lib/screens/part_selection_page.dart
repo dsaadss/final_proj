@@ -402,7 +402,7 @@ class _PartSelectionPageState extends State<PartSelectionPage> {
               child: ElevatedButton.icon(
                 onPressed: _isAnalyzing ? null : _scanFullTable,
                 icon: const Icon(Icons.crop_free),
-                label: const Text("Scan Table"),
+                label: const Text("Scan parts"),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,

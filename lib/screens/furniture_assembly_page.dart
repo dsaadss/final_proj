@@ -1,11 +1,9 @@
-// lib/screens/furniture_assembly_page.dart
-
 import 'dart:io';
-import 'dart:convert'; // For JSON decoding
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:pdfx/pdfx.dart';
 
-// Imports for parts logic
 import '../models/part.dart';
 import '../widgets/parts_tracker_sheet.dart';
 
@@ -19,15 +17,27 @@ class FurnitureAssemblyPage extends StatefulWidget {
 }
 
 class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
+  // --- 3D STEPS DATA ---
   List<File> _steps = [];
   int _currentIndex = 0;
   bool _isLoading = true;
 
-  // --- NEW: List of hardware parts ---
+  // --- HARDWARE PARTS DATA ---
   List<AssemblyPart> _projectParts = [];
 
-  Color _currentBackgroundColor = Colors.grey.shade200;
+  // --- PDF DATA ---
+  PdfController? _pdfController;
+  Map<int, int> _stepToPageMap = {};
 
+  // State flags
+  bool _isPdfVisible = false;
+  bool _hasPdf = false;
+  bool _isSplitMode = false;
+
+  bool get _isPdfReady => _hasPdf && _pdfController != null;
+
+  // --- VISUALS ---
+  Color _currentBackgroundColor = Colors.grey.shade200;
   final List<Color> _palette = [
     Colors.grey.shade200,
     Colors.white,
@@ -36,38 +46,18 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     Colors.blue.shade100,
     Colors.green.shade100,
     Colors.orange.shade100,
-    Colors.purple.shade100,
   ];
 
   @override
   void initState() {
     super.initState();
-    _loadAssemblySteps();
-    _loadParts(); // <--- NEW: Load hardware list
+    _loadAllData();
   }
 
-  // --- NEW: Load parts from JSON ---
-// Inside _FurnitureAssemblyPageState
-
-  Future<void> _loadParts() async {
-    try {
-      final partsFile = File('${widget.folder.path}/parts.json');
-      if (await partsFile.exists()) {
-        final String content = await partsFile.readAsString();
-        final List<dynamic> jsonList = jsonDecode(content);
-
-        setState(() {
-          _projectParts = jsonList.map((j) {
-            final part = AssemblyPart.fromJson(j);
-            // ⚠️ CRITICAL: Tell the part where the images are stored!
-            part.localDirectory = widget.folder.path;
-            return part;
-          }).toList();
-        });
-      }
-    } catch (e) {
-      print("Error loading parts.json: $e");
-    }
+  Future<void> _loadAllData() async {
+    await _loadAssemblySteps();
+    await _loadParts();
+    await _loadPdfAndMetadata();
   }
 
   Future<void> _loadAssemblySteps() async {
@@ -86,69 +76,115 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
       });
     } catch (e) {
       print("Error loading steps: $e");
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadParts() async {
+    try {
+      final partsFile = File('${widget.folder.path}/parts.json');
+      if (await partsFile.exists()) {
+        final String content = await partsFile.readAsString();
+        final List<dynamic> jsonList = jsonDecode(content);
+
+        setState(() {
+          _projectParts = jsonList.map((j) {
+            final part = AssemblyPart.fromJson(j);
+            part.localDirectory = widget.folder.path;
+            return part;
+          }).toList();
+        });
+      }
+    } catch (e) {
+      print("Error loading parts.json: $e");
+    }
+  }
+
+  Future<void> _loadPdfAndMetadata() async {
+    final pdfFile = File('${widget.folder.path}/guide.pdf');
+
+    if (await pdfFile.exists()) {
+      final controller = PdfController(
+        document: PdfDocument.openFile(pdfFile.path),
+      );
+
       setState(() {
-        _isLoading = false;
+        _pdfController = controller;
+        _hasPdf = true;
       });
+    }
+
+    final metaFile = File('${widget.folder.path}/steps.json');
+    if (await metaFile.exists()) {
+      try {
+        final String content = await metaFile.readAsString();
+        final List<dynamic> jsonList = jsonDecode(content);
+
+        final Map<int, int> tempMap = {};
+        for (var item in jsonList) {
+          if (item['stepIndex'] != null && item['pdfPage'] != null) {
+            tempMap[item['stepIndex']] = item['pdfPage'];
+          }
+        }
+
+        setState(() => _stepToPageMap = tempMap);
+      } catch (e) {
+        print("Error parsing steps.json: $e");
+      }
+    }
+  }
+
+  void _jumpPdfToCurrentStep() {
+    final int? page = _stepToPageMap[_currentIndex];
+    if (page == null || _pdfController == null) return;
+
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      _pdfController!.jumpToPage(page);
+    });
+  }
+
+  void _jumpToStep(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+
+    if (_isPdfVisible) {
+      _jumpPdfToCurrentStep();
     }
   }
 
   void _nextStep() {
-    setState(() {
-      if (_currentIndex < _steps.length - 1) {
-        _currentIndex++;
-      }
-    });
+    if (_currentIndex < _steps.length - 1) _jumpToStep(_currentIndex + 1);
   }
 
   void _previousStep() {
-    setState(() {
-      if (_currentIndex > 0) {
-        _currentIndex--;
-      }
-    });
+    if (_currentIndex > 0) _jumpToStep(_currentIndex - 1);
   }
 
-  // --- NEW: Open the tracker sheet ---
   void _openPartsTracker() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      isScrollControlled: true, // Allow it to be taller if needed
-      builder: (context) => PartsTrackerSheet(
-        parts: _projectParts,
-        onUpdate: () {
-          // You could save progress to disk here if you want
-        },
-      ),
+      isScrollControlled: true,
+      builder: (context) =>
+          PartsTrackerSheet(parts: _projectParts, onUpdate: () {}),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final String title = widget.folder.path.split('/').last;
-
-    if (_isLoading) {
+    if (_isLoading)
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    if (_steps.isEmpty) {
-      return Scaffold(
-        appBar: AppBar(title: Text(title)),
-        body: const Center(
-          child: Text("No assembly steps found in this folder."),
-        ),
-      );
-    }
+    if (_steps.isEmpty)
+      return const Scaffold(body: Center(child: Text("No steps found.")));
 
     final File currentFile = _steps[_currentIndex];
-    final String currentStepName =
-        "Step ${_currentIndex + 1} of ${_steps.length}";
 
     return Scaffold(
       extendBodyBehindAppBar: true,
-
       appBar: AppBar(
-        title: Text(title),
+        title: Text("Step ${_currentIndex + 1} of ${_steps.length}"),
         backgroundColor: Colors.transparent,
         elevation: 0,
         iconTheme: IconThemeData(
@@ -164,171 +200,254 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
           fontWeight: FontWeight.bold,
         ),
       ),
-
-      // --- NEW: FLOATING ACTION BUTTON FOR TOOLBOX ---
-     floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
-
-      floatingActionButton: _projectParts.isEmpty
-          ? null
-          : FloatingActionButton(
-              backgroundColor: Colors.red[700],
-              onPressed: _openPartsTracker,
-              child: const Icon(Icons.handyman, color: Colors.white),
-            ),
-
       body: Stack(
         children: [
           // 1. BACKGROUND
-          Container(
-            color: _currentBackgroundColor,
-            width: double.infinity,
-            height: double.infinity,
-          ),
+          Container(color: _currentBackgroundColor),
 
-          // 2. MODEL VIEWER
-          ModelViewer(
-            key: ValueKey(currentFile.path),
-            src: 'file://${currentFile.path}',
-            ar: true,
-            cameraControls: true,
-            autoRotate: false,
-            backgroundColor: Colors.transparent,
-          ),
-
-          // 3. COLOR PALETTE (Top)
-          Positioned(
-            top: 100,
-            left: 0,
-            right: 0,
-            child: SizedBox(
-              height: 50,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _palette.length,
-                itemBuilder: (context, index) {
-                  final color = _palette[index];
-                  final isSelected = _currentBackgroundColor == color;
-
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _currentBackgroundColor = color;
-                      });
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.only(right: 12),
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isSelected
-                              ? Colors.blueAccent
-                              : Colors.grey.shade400,
-                          width: isSelected ? 3 : 1,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: isSelected
-                          ? Icon(
-                              Icons.check,
-                              size: 20,
-                              color: color.computeLuminance() > 0.5
-                                  ? Colors.black
-                                  : Colors.white,
-                            )
-                          : null,
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-
-          // 4. CONTROLS OVERLAY (Lifted High for AR Button Space)
-          Positioned(
-            left: 20,
-            right: 20,
-            bottom: 80,
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(30), // Pill shape
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Step Counter Title
-                  Text(
-                    currentStepName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Buttons Row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          // 2. MAIN CONTENT (Vertical Split Logic)
+          Positioned.fill(
+            child: _isSplitMode
+                ? Column(
+                    // ⚠️ CHANGED TO COLUMN (Vertical Split)
                     children: [
-                      // PREV BUTTON
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white24,
-                          foregroundColor: Colors.white,
-                          shape: const StadiumBorder(), // Rounded ends
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
+                      // TOP: 3D MODEL
+                      Expanded(
+                        flex: 1, // Equal height
+                        child: ModelViewer(
+                          key: ValueKey(currentFile.path),
+                          src: 'file://${currentFile.path}',
+                          ar: true,
+                          cameraControls: true,
+                          autoRotate: false,
+                          backgroundColor: Colors.transparent,
                         ),
-                        onPressed: _currentIndex > 0 ? _previousStep : null,
-                        icon: const Icon(Icons.arrow_back, size: 18),
-                        label: const Text("Prev"),
                       ),
-
-                      const SizedBox(width: 10),
-
-                      // NEXT BUTTON
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange,
-                          foregroundColor: Colors.white,
-                          shape: const StadiumBorder(), // Rounded ends
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
+                      // BOTTOM: PDF PANEL
+                      Expanded(
+                        flex: 1, // Equal height
+                        child: Container(
+                          color: Colors.white,
+                          child: PdfView(
+                            controller: _pdfController!,
+                            scrollDirection: Axis.vertical,
                           ),
-                        ),
-                        onPressed: _currentIndex < _steps.length - 1
-                            ? _nextStep
-                            : null,
-                        child: Row(
-                          children: const [
-                            Text("Next"),
-                            SizedBox(width: 8),
-                            Icon(Icons.arrow_forward, size: 18),
-                          ],
                         ),
                       ),
                     ],
+                  )
+                : ModelViewer(
+                    key: ValueKey(currentFile.path),
+                    src: 'file://${currentFile.path}',
+                    ar: true,
+                    cameraControls: true,
+                    autoRotate: false,
+                    backgroundColor: Colors.transparent,
+                  ),
+          ),
+
+          // 3. COLOR PALETTE (Hidden in split mode to save space)
+          if (!_isSplitMode)
+            Positioned(
+              top: 110,
+              left: 0,
+              right: 0,
+              child: SizedBox(
+                height: 50,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _palette.length,
+                  itemBuilder: (context, index) {
+                    final color = _palette[index];
+                    final isSelected = _currentBackgroundColor == color;
+                    return GestureDetector(
+                      onTap: () =>
+                          setState(() => _currentBackgroundColor = color),
+                      child: Container(
+                        margin: const EdgeInsets.only(right: 12),
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: isSelected
+                                ? Colors.blueAccent
+                                : Colors.grey.shade400,
+                            width: isSelected ? 3 : 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: isSelected
+                            ? Icon(
+                                Icons.check,
+                                size: 20,
+                                color: color.computeLuminance() > 0.5
+                                    ? Colors.black
+                                    : Colors.white,
+                              )
+                            : null,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+          // 4. NAVIGATION ARROWS
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 80,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton(
+                  onPressed: _currentIndex > 0 ? _previousStep : null,
+                  style: ElevatedButton.styleFrom(
+                    shape: const CircleBorder(),
+                    padding: const EdgeInsets.all(16),
+                  ),
+                  child: const Icon(Icons.arrow_back),
+                ),
+                const SizedBox(width: 40),
+                ElevatedButton(
+                  onPressed: _currentIndex < _steps.length - 1
+                      ? _nextStep
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    shape: const CircleBorder(),
+                    padding: const EdgeInsets.all(16),
+                    backgroundColor: Colors.orange,
+                  ),
+                  child: const Icon(Icons.arrow_forward),
+                ),
+              ],
+            ),
+          ),
+
+          // 5. SMALLER ACTION BUTTONS (Bottom Left)
+          // Replaced wide buttons with compact Round buttons
+          Positioned(
+            left: 20,
+            bottom: 20,
+            child: Row(
+              children: [
+                // MANUAL BUTTON
+                if (_hasPdf && !_isSplitMode) ...[
+                  FloatingActionButton(
+                    heroTag: "pdf_btn",
+                    mini: true, // Smaller size
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.blue,
+                    tooltip: "Show Manual Popup",
+                    onPressed: () {
+                      if (!_isPdfReady) return;
+                      setState(() => _isPdfVisible = !_isPdfVisible);
+                      if (_isPdfVisible) _jumpPdfToCurrentStep();
+                    },
+                    child: Icon(
+                      _isPdfVisible ? Icons.visibility_off : Icons.menu_book,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+
+                // SPLIT VIEW BUTTON
+                if (_hasPdf) ...[
+                  FloatingActionButton(
+                    heroTag: "split_btn",
+                    mini: true, // Smaller size
+                    backgroundColor: Colors.grey.shade800,
+                    foregroundColor: Colors.white,
+                    tooltip: "Toggle Split View",
+                    onPressed: () {
+                      if (!_isPdfReady) return;
+                      setState(() {
+                        _isSplitMode = !_isSplitMode;
+                        _isPdfVisible = _isSplitMode;
+                      });
+                      if (_isSplitMode) _jumpPdfToCurrentStep();
+                    },
+                    child: Icon(
+                      _isSplitMode
+                          ? Icons.close_fullscreen
+                          : Icons.vertical_split,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+
+                // PARTS BUTTON
+                if (_projectParts.isNotEmpty)
+                  FloatingActionButton(
+                    heroTag: "parts_btn",
+                    backgroundColor: Colors.red[700],
+                    foregroundColor: Colors.white,
+                    tooltip: "Hardware Parts",
+                    onPressed: _openPartsTracker,
+                    child: const Icon(Icons.handyman),
+                  ),
+              ],
+            ),
+          ),
+
+          // 6. POPUP MANUAL (Only when NOT in split mode)
+          if (_isPdfReady && _isPdfVisible && !_isSplitMode)
+            Positioned.fill(
+              child: Stack(
+                children: [
+                  GestureDetector(
+                    onTap: () => setState(() => _isPdfVisible = false),
+                    child: Container(color: Colors.black.withOpacity(0.3)),
+                  ),
+                  Center(
+                    child: Material(
+                      elevation: 16,
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        width: 300,
+                        height: 450,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Colors.white,
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  "Manual Page",
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () =>
+                                      setState(() => _isPdfVisible = false),
+                                ),
+                              ],
+                            ),
+                            const Divider(),
+                            Expanded(
+                              child: PdfView(controller: _pdfController!),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-          ),
         ],
       ),
     );

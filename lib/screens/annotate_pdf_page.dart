@@ -5,6 +5,20 @@ import 'package:pdfx/pdfx.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
+// ⚠️ SHARED CLASS: Must match what UploadPage expects
+class AssemblyStep {
+  final File imageFile;
+  final int pageNumber;
+  AssemblyStep({required this.imageFile, required this.pageNumber});
+}
+
+// Helper class for internal state
+class _CropData {
+  final Uint8List bytes;
+  final int pageNumber;
+  _CropData(this.bytes, this.pageNumber);
+}
+
 enum AnnotationTool { rectangle, freehand }
 
 class AnnotatePdfPage extends StatefulWidget {
@@ -20,13 +34,13 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
   Uint8List? _pageBytes;
   Rect? _selection;
   Offset? _dragStart;
-  Uint8List? _croppedBytes;
   Size? _imageDisplaySize;
 
   AnnotationTool _currentTool = AnnotationTool.rectangle;
   List<Offset> _freehandPoints = [];
 
-  final List<Uint8List> _savedCrops = [];
+  // ⚠️ CHANGED: Store Bytes AND Page Number
+  final List<_CropData> _savedCrops = [];
 
   PdfDocument? _pdfDoc;
   int _currentPage = 1;
@@ -77,7 +91,6 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
       setState(() {
         _pageBytes = imgPage.bytes;
         _selection = null;
-        _croppedBytes = null;
         _freehandPoints = [];
         _isLoading = false;
       });
@@ -179,39 +192,46 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
       }
     }
 
-    // --- GREY BACKGROUND FIX ---
-    // Create new image and fill with Grey (127,127,127) to fix AI alpha issues
+    // Grey Background Fix
     final flattened = img.Image(width: cropped.width, height: cropped.height);
     img.fill(flattened, color: img.ColorRgb8(127, 127, 127));
     img.compositeImage(flattened, cropped);
-    // ---------------------------
 
     final bytes = Uint8List.fromList(img.encodePng(flattened));
+
     setState(() {
-      _croppedBytes = bytes;
-      _savedCrops.add(bytes);
+      // ⚠️ STORE PAGE NUMBER HERE
+      _savedCrops.add(_CropData(bytes, _currentPage));
+
+      // Clear selection after adding
+      _selection = null;
+      _freehandPoints = [];
     });
   }
 
   Future<void> _confirmCrops() async {
     if (_savedCrops.isEmpty) {
-      Navigator.pop(context, <File>[]);
+      Navigator.pop(context, <AssemblyStep>[]);
       return;
     }
 
-    List<File> resultFiles = [];
+    List<AssemblyStep> resultSteps = [];
     final dir = await getTemporaryDirectory();
 
     for (int i = 0; i < _savedCrops.length; i++) {
-      final bytes = _savedCrops[i];
+      final data = _savedCrops[i];
       final file = File(
         '${dir.path}/crop_${DateTime.now().millisecondsSinceEpoch}_$i.png',
       );
-      await file.writeAsBytes(bytes);
-      resultFiles.add(file);
+      await file.writeAsBytes(data.bytes);
+
+      // ⚠️ Create AssemblyStep with Page Number
+      resultSteps.add(
+        AssemblyStep(imageFile: file, pageNumber: data.pageNumber),
+      );
     }
 
-    if (mounted) Navigator.pop(context, resultFiles);
+    if (mounted) Navigator.pop(context, resultSteps);
   }
 
   @override
@@ -242,20 +262,17 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
             onPressed: () =>
                 setState(() => _currentTool = AnnotationTool.freehand),
           ),
-
           const SizedBox(width: 8),
           Container(width: 1, height: 24, color: Colors.grey.shade300),
           const SizedBox(width: 8),
-
           IconButton(
-            tooltip: "Confirm Selection",
+            tooltip: "Add to List",
             icon: const Icon(Icons.check, color: Colors.blue),
             onPressed: _cropSelection,
           ),
-
           if (_savedCrops.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(left: 8.0, right: 8.0),
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
               child: TextButton.icon(
                 style: TextButton.styleFrom(
                   backgroundColor: Colors.green.shade50,
@@ -302,7 +319,6 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                       ],
                     ),
                   ),
-
                 Expanded(
                   child: Center(
                     child: LayoutBuilder(
@@ -345,8 +361,6 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                                                   local,
                                                 );
                                               } else {
-                                                // --- 1. SMOOTHING FIX ---
-                                                // Don't record tiny movements (< 5 pixels)
                                                 if (_freehandPoints.isEmpty ||
                                                     (local -
                                                                 _freehandPoints
@@ -360,8 +374,6 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                                           },
                                           onPanEnd: (details) {
                                             _dragStart = null;
-                                            // --- 2. AUTO-CLOSE FIX ---
-                                            // Connect end back to start
                                             if (_currentTool ==
                                                     AnnotationTool.freehand &&
                                                 _freehandPoints.isNotEmpty) {
@@ -399,7 +411,6 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                     ),
                   ),
                 ),
-
                 if (_savedCrops.isNotEmpty)
                   Container(
                     height: 100,
@@ -432,8 +443,26 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                                     child: ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
                                       child: Image.memory(
-                                        _savedCrops[index],
+                                        _savedCrops[index].bytes,
                                         fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                                  // Page Number Badge
+                                  Positioned(
+                                    bottom: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: Container(
+                                      color: Colors.black54,
+                                      padding: const EdgeInsets.all(2),
+                                      child: Text(
+                                        "Pg ${_savedCrops[index].pageNumber}",
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                        ),
+                                        textAlign: TextAlign.center,
                                       ),
                                     ),
                                   ),
@@ -441,11 +470,9 @@ class _AnnotatePdfPageState extends State<AnnotatePdfPage> {
                                     right: 4,
                                     top: 4,
                                     child: GestureDetector(
-                                      onTap: () {
-                                        setState(() {
-                                          _savedCrops.removeAt(index);
-                                        });
-                                      },
+                                      onTap: () => setState(
+                                        () => _savedCrops.removeAt(index),
+                                      ),
                                       child: Container(
                                         padding: const EdgeInsets.all(4),
                                         decoration: const BoxDecoration(
@@ -487,8 +514,6 @@ class _SelectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // --- 3. VISUAL STYLE FIX ---
-    // Smoother, thicker lines
     final border = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3.0
@@ -506,14 +531,8 @@ class _SelectionPainter extends CustomPainter {
     } else if (tool == AnnotationTool.freehand && freehandPoints.isNotEmpty) {
       final path = Path()
         ..moveTo(freehandPoints.first.dx, freehandPoints.first.dy);
-
-      for (final p in freehandPoints.skip(1)) {
-        path.lineTo(p.dx, p.dy);
-      }
-
-      // Visually close the path
+      for (final p in freehandPoints.skip(1)) path.lineTo(p.dx, p.dy);
       path.close();
-
       canvas.drawPath(path, fill);
       canvas.drawPath(path, border);
     }
