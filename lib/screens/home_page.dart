@@ -1,13 +1,13 @@
 // lib/screens/home_page.dart
 
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../widgets/action_card.dart';
 import 'upload_page.dart';
-import 'test_screen.dart';
-import 'furniture_assembly_page.dart'; // To open the player
+import 'furniture_assembly_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,19 +17,77 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  int _selectedIndex = 0;
-
-  // This list will hold the folders (Projects) found on your phone
   List<FileSystemEntity> _projectFolders = [];
+  List<FileSystemEntity> _filteredProjects = [];
   bool _isLoadingHistory = true;
+
+  // Search controller
+  final TextEditingController _searchController = TextEditingController();
+  bool _isSearching = false;
+
+  // 🆕 Progress tracking
+  Map<String, Map<String, dynamic>> _projectProgress = {};
 
   @override
   void initState() {
     super.initState();
     _loadHistory();
+    _searchController.addListener(_filterProjects);
   }
 
-  // --- 1. SCAN PHONE FOR FOLDERS ---
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _filterProjects() {
+    final query = _searchController.text.toLowerCase();
+    setState(() {
+      if (query.isEmpty) {
+        _filteredProjects = _projectFolders;
+      } else {
+        _filteredProjects = _projectFolders.where((entity) {
+          final folderName = entity.path.split('/').last.toLowerCase();
+          return folderName.contains(query);
+        }).toList();
+      }
+    });
+  }
+
+  // 🆕 Load progress for all projects
+  Future<void> _loadAllProgress() async {
+    Map<String, Map<String, dynamic>> allProgress = {};
+
+    for (var folder in _projectFolders) {
+      if (folder is Directory) {
+        final folderName = folder.path.split('/').last;
+        final progressData = await _loadProjectProgress(folder.path);
+        if (progressData != null) {
+          allProgress[folderName] = progressData;
+        }
+      }
+    }
+
+    setState(() {
+      _projectProgress = allProgress;
+    });
+  }
+
+  // 🆕 Load progress for a single project
+  Future<Map<String, dynamic>?> _loadProjectProgress(String folderPath) async {
+    try {
+      final progressFile = File('$folderPath/progress.json');
+      if (await progressFile.exists()) {
+        final content = await progressFile.readAsString();
+        return jsonDecode(content) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print("Error loading progress: $e");
+    }
+    return null;
+  }
+
   Future<void> _loadHistory() async {
     setState(() {
       _isLoadingHistory = true;
@@ -37,24 +95,23 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final Directory appDir = await getApplicationDocumentsDirectory();
-
-      // Get all items in the documents directory
       final List<FileSystemEntity> entities = appDir.listSync();
-
-      // Filter: Keep only Directories (these are your furniture names)
       final List<FileSystemEntity> folders = entities.where((e) {
         return e is Directory;
       }).toList();
 
-      // Sort by date modified (Newest projects at top)
       folders.sort((a, b) {
         return b.statSync().modified.compareTo(a.statSync().modified);
       });
 
       setState(() {
         _projectFolders = folders;
+        _filteredProjects = folders;
         _isLoadingHistory = false;
       });
+
+      // 🆕 Load progress after folders are loaded
+      await _loadAllProgress();
     } catch (e) {
       print("Error loading history: $e");
       setState(() {
@@ -63,24 +120,23 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --- 2. OPEN THE ASSEMBLY PLAYER ---
-  void _openProject(Directory folder) {
-    Navigator.push(
+  void _openProject(Directory folder) async {
+    // Navigate and wait for return
+    await Navigator.push(
       context,
       MaterialPageRoute(
-        // We pass the folder to the Assembly Page so it can find all steps inside
         builder: (context) => FurnitureAssemblyPage(folder: folder),
       ),
     );
+
+    // 🆕 Reload progress when returning from assembly page
+    await _loadAllProgress();
   }
 
-  // --- 3. DELETE PROJECT ---
   Future<void> _deleteProject(Directory folder) async {
     try {
-      await folder.delete(
-        recursive: true,
-      ); // Delete folder and all models inside
-      _loadHistory(); // Refresh the UI
+      await folder.delete(recursive: true);
+      _loadHistory();
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -91,35 +147,94 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFFBFBFA),
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: _loadHistory, // Pull down to refresh list
+          onRefresh: _loadHistory,
           child: ListView(
             padding: const EdgeInsets.all(16.0),
             children: [
               // HEADER
-              const Text(
-                'Welcome to AR Assembly',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Create your own 3D guides or view saved projects.',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Welcome to AR Assembly',
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'Create your own 3D guides or view saved projects.',
+                          style: TextStyle(fontSize: 16, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      _isSearching ? Icons.close : Icons.search,
+                      size: 28,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _isSearching = !_isSearching;
+                        if (!_isSearching) {
+                          _searchController.clear();
+                        }
+                      });
+                    },
+                  ),
+                ],
               ),
               const SizedBox(height: 24),
 
-              // ACTION CARDS (Top Grid)
+              // SEARCH BAR
+              if (_isSearching)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 24),
+                  child: TextField(
+                    controller: _searchController,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      hintText: 'Search projects...',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                              },
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade200),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade200),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Colors.orange),
+                      ),
+                    ),
+                  ),
+                ),
+
+              // ACTION CARDS
               GridView.count(
                 crossAxisCount: 2,
                 shrinkWrap: true,
@@ -132,7 +247,6 @@ class _HomePageState extends State<HomePage> {
                     title: 'Create Guide',
                     imagePath: 'assets/images/pdf_upload.png',
                     onTap: () async {
-                      // Wait for UploadPage to close, then reload history
                       await Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -142,31 +256,32 @@ class _HomePageState extends State<HomePage> {
                       _loadHistory();
                     },
                   ),
-                  ActionCard(
-                    title: 'Quick Test',
-                    imagePath: 'assets/images/camera_scan.png',
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const TestScreen(),
-                        ),
-                      );
-                    },
-                  ),
                 ],
               ),
 
               const SizedBox(height: 32),
 
               // HISTORY HEADER
-              const Text(
-                'My Projects',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'My Projects',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                  if (_isSearching && _searchController.text.isNotEmpty)
+                    Text(
+                      '${_filteredProjects.length} found',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 16),
 
-              // DYNAMIC PROJECT LIST
+              // PROJECT LIST
               if (_isLoadingHistory)
                 const Center(
                   child: Padding(
@@ -174,7 +289,31 @@ class _HomePageState extends State<HomePage> {
                     child: CircularProgressIndicator(),
                   ),
                 )
-              else if (_projectFolders.isEmpty)
+              else if (_filteredProjects.isEmpty &&
+                  _searchController.text.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.all(30),
+                  alignment: Alignment.center,
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.search_off,
+                        size: 60,
+                        color: Colors.grey.shade300,
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        "No projects found",
+                        style: TextStyle(color: Colors.grey, fontSize: 18),
+                      ),
+                      Text(
+                        "Try a different search term",
+                        style: TextStyle(color: Colors.grey.shade400),
+                      ),
+                    ],
+                  ),
+                )
+              else if (_filteredProjects.isEmpty)
                 Container(
                   padding: const EdgeInsets.all(30),
                   alignment: Alignment.center,
@@ -198,19 +337,25 @@ class _HomePageState extends State<HomePage> {
                   ),
                 )
               else
-                // Render the list of folders
-                ..._projectFolders.map((entity) {
+                ..._filteredProjects.map((entity) {
                   final Directory folder = entity as Directory;
                   final String folderName = folder.path.split('/').last;
 
-                  // Count files inside (optional, nice for UI)
-                  int fileCount = 0;
+                  // Count total steps
+                  int totalSteps = 0;
                   try {
-                    fileCount = folder
+                    totalSteps = folder
                         .listSync()
-                        .where((e) => e.path.endsWith('.glb'))
+                        .where((e) => e.path.endsWith('_white.glb'))
                         .length;
                   } catch (_) {}
+
+                  // 🆕 Get progress data
+                  final progressData = _projectProgress[folderName];
+                  final int currentStep = progressData?['currentStep'] ?? 0;
+                  final int stepsLeft = totalSteps > 0
+                      ? totalSteps - currentStep
+                      : 0;
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
@@ -222,9 +367,8 @@ class _HomePageState extends State<HomePage> {
                     ),
                     child: InkWell(
                       borderRadius: BorderRadius.circular(12),
-                      onTap: () => _openProject(folder), // OPEN PROJECT
+                      onTap: () => _openProject(folder),
                       onLongPress: () {
-                        // DELETE PROJECT
                         showDialog(
                           context: context,
                           builder: (ctx) => AlertDialog(
@@ -255,7 +399,6 @@ class _HomePageState extends State<HomePage> {
                         padding: const EdgeInsets.all(16.0),
                         child: Row(
                           children: [
-                            // Icon Box
                             Container(
                               width: 50,
                               height: 50,
@@ -269,8 +412,6 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                             const SizedBox(width: 16),
-
-                            // Text Info
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -284,17 +425,43 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                   ),
                                   const SizedBox(height: 4),
-                                  Text(
-                                    "$fileCount steps",
-                                    style: TextStyle(
-                                      color: Colors.grey.shade500,
-                                      fontSize: 13,
+                                  // 🆕 Show progress or total steps
+                                  if (totalSteps > 0 && currentStep > 0)
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.check_circle,
+                                          size: 14,
+                                          color: stepsLeft == 0
+                                              ? Colors.green
+                                              : Colors.orange,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          stepsLeft == 0
+                                              ? "Completed ✓"
+                                              : "$stepsLeft/$totalSteps steps left",
+                                          style: TextStyle(
+                                            color: stepsLeft == 0
+                                                ? Colors.green
+                                                : Colors.orange.shade700,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    Text(
+                                      "$totalSteps steps",
+                                      style: TextStyle(
+                                        color: Colors.grey.shade500,
+                                        fontSize: 13,
+                                      ),
                                     ),
-                                  ),
                                 ],
                               ),
                             ),
-
                             const Icon(
                               Icons.arrow_forward_ios,
                               size: 16,
@@ -311,21 +478,6 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
         ),
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: Colors.white,
-        selectedItemColor: Colors.orange,
-        unselectedItemColor: Colors.grey,
-        items: const <BottomNavigationBarItem>[
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            label: 'Account',
-          ),
-        ],
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
       ),
     );
   }

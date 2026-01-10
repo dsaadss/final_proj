@@ -18,12 +18,12 @@ class FurnitureAssemblyPage extends StatefulWidget {
 
 class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   // --- 3D DATA ---
-  List<File> _steps = []; // Only stores the "White" (default) files
+  List<File> _steps = [];
   int _currentIndex = 0;
   bool _isLoading = true;
 
   // 🆕 COLOR VARIANT STATE
-  String _selectedVariant = "white"; // "white", "black", "wood"
+  String _selectedVariant = "white";
 
   // --- HARDWARE & PDF DATA ---
   List<AssemblyPart> _projectParts = [];
@@ -43,7 +43,7 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     Colors.grey.shade200,
     Colors.white,
     Colors.black,
-    const Color(0xFF1A1A1A), // Dark Grey
+    const Color(0xFF1A1A1A),
     Colors.blue.shade100,
     Colors.green.shade100,
     Colors.orange.shade100,
@@ -59,14 +59,49 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     await _loadAssemblySteps();
     await _loadParts();
     await _loadPdfAndMetadata();
+    await _loadProgress(); // 🆕 Load saved progress
+  }
+
+  // 🆕 Load saved progress
+  Future<void> _loadProgress() async {
+    try {
+      final progressFile = File('${widget.folder.path}/progress.json');
+      if (await progressFile.exists()) {
+        final content = await progressFile.readAsString();
+        final data = jsonDecode(content) as Map<String, dynamic>;
+        setState(() {
+          _currentIndex = data['currentStep'] ?? 0;
+          // Make sure index is within bounds
+          if (_currentIndex >= _steps.length) {
+            _currentIndex = _steps.length - 1;
+          }
+        });
+      }
+    } catch (e) {
+      print("Error loading progress: $e");
+    }
+  }
+
+  // 🆕 Save progress
+  Future<void> _saveProgress() async {
+    try {
+      final progressFile = File('${widget.folder.path}/progress.json');
+      final data = {
+        'currentStep':
+            _currentIndex + 1, // Save as completed step (next step to do)
+        'totalSteps': _steps.length,
+        'lastUpdated': DateTime.now().toIso8601String(),
+      };
+      await progressFile.writeAsString(jsonEncode(data));
+    } catch (e) {
+      print("Error saving progress: $e");
+    }
   }
 
   Future<void> _loadAssemblySteps() async {
     try {
       final List<FileSystemEntity> entities = widget.folder.listSync();
 
-      // 🆕 FILTER: Only load the 'white' (default) models into the list
-      // We will infer the names of black/wood models from these.
       final List<File> glbFiles = entities
           .where((e) => e is File && e.path.endsWith('_white.glb'))
           .cast<File>()
@@ -143,6 +178,7 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   void _jumpToStep(int index) {
     setState(() => _currentIndex = index);
     if (_isPdfVisible) _jumpPdfToCurrentStep();
+    _saveProgress(); // 🆕 Save progress when step changes
   }
 
   void _nextStep() {
@@ -163,17 +199,14 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     );
   }
 
-  // 🆕 HELPER: Get correct file based on color selection
   File _getCurrentVariantFile() {
     final File baseFile = _steps[_currentIndex];
-    // Replace "_white.glb" with "_black.glb" or "_wood.glb"
     String newPath = baseFile.path.replaceAll(
       '_white.glb',
       '_$_selectedVariant.glb',
     );
 
     File variantFile = File(newPath);
-    // Fallback to base file if variant doesn't exist
     return variantFile.existsSync() ? variantFile : baseFile;
   }
 
@@ -186,14 +219,13 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
 
     final File currentFile = _getCurrentVariantFile();
 
-    // THE RELIABLE GOOGLE VIEWER
     Widget modelView = ModelViewer(
-      key: ValueKey(currentFile.path), // Forces reload when file changes
+      key: ValueKey(currentFile.path),
       src: 'file://${currentFile.path}',
       ar: true,
       cameraControls: true,
       autoRotate: false,
-      backgroundColor: Colors.transparent, // Let container color show through
+      backgroundColor: Colors.transparent,
     );
 
     return Scaffold(
@@ -217,17 +249,13 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
       ),
       body: Stack(
         children: [
-          // 1. BACKGROUND LAYER (Controls the contrast)
           Positioned.fill(child: Container(color: _currentBackgroundColor)),
 
-          // 2. MAIN CONTENT (Split Logic)
           Positioned.fill(
             child: _isSplitMode
                 ? Column(
                     children: [
-                      // TOP: 3D MODEL
                       Expanded(flex: 1, child: modelView),
-                      // BOTTOM: PDF PANEL
                       Expanded(
                         flex: 1,
                         child: Container(
@@ -240,15 +268,14 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
                       ),
                     ],
                   )
-                : modelView, // Full screen model
+                : modelView,
           ),
 
-          // 3. COLOR PALETTE (Background) - Top Left
           if (!_isSplitMode)
             Positioned(
               top: 110,
               left: 0,
-              right: 80, // Leave space for variant buttons on right
+              right: 80,
               child: SizedBox(
                 height: 50,
                 child: ListView.builder(
@@ -298,7 +325,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
               ),
             ),
 
-          // 🆕 4. VARIANT SELECTOR (Wood/White/Black) - Top Right
           if (!_isSplitMode)
             Positioned(
               top: 110,
@@ -314,7 +340,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
               ),
             ),
 
-          // 5. NAVIGATION ARROWS
           Positioned(
             left: 0,
             right: 0,
@@ -346,7 +371,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
             ),
           ),
 
-          // 6. ACTION BUTTONS (Compact Round Icons)
           Positioned(
             left: 20,
             bottom: 20,
@@ -403,7 +427,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
             ),
           ),
 
-          // 7. POPUP MANUAL (Non-Split Mode)
           if (_isPdfReady && _isPdfVisible && !_isSplitMode)
             Positioned.fill(
               child: Stack(
@@ -457,7 +480,6 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
     );
   }
 
-  // 🆕 BUTTON HELPER
   Widget _variantButton(String variant, Color color, String tooltip) {
     bool isSelected = _selectedVariant == variant;
     return GestureDetector(
