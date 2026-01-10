@@ -29,7 +29,7 @@ class AreaApp extends StatelessWidget {
     return MaterialApp(
       // This turns off the "Debug" banner in the corner.
       debugShowCheckedModeBanner: false,
-      title: 'AR Assembly',
+      title: 'AR Assmbly',
 
       // 'theme' defines the global colors, fonts, and styles for your *entire* app.
       theme: ThemeData(

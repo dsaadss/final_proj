@@ -1,7 +1,7 @@
 // lib/screens/home_page.dart
 
 import 'dart:io';
-import 'dart:convert';
+import 'dart:convert'; // <--- 1. ADD THIS IMPORT
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -17,6 +17,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  // This list will hold the folders (Projects) found on your phone
   List<FileSystemEntity> _projectFolders = [];
   List<FileSystemEntity> _filteredProjects = [];
   bool _isLoadingHistory = true;
@@ -24,9 +25,6 @@ class _HomePageState extends State<HomePage> {
   // Search controller
   final TextEditingController _searchController = TextEditingController();
   bool _isSearching = false;
-
-  // 🆕 Progress tracking
-  Map<String, Map<String, dynamic>> _projectProgress = {};
 
   @override
   void initState() {
@@ -41,6 +39,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  // Filter projects based on search query
   void _filterProjects() {
     final query = _searchController.text.toLowerCase();
     setState(() {
@@ -55,39 +54,7 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // 🆕 Load progress for all projects
-  Future<void> _loadAllProgress() async {
-    Map<String, Map<String, dynamic>> allProgress = {};
-
-    for (var folder in _projectFolders) {
-      if (folder is Directory) {
-        final folderName = folder.path.split('/').last;
-        final progressData = await _loadProjectProgress(folder.path);
-        if (progressData != null) {
-          allProgress[folderName] = progressData;
-        }
-      }
-    }
-
-    setState(() {
-      _projectProgress = allProgress;
-    });
-  }
-
-  // 🆕 Load progress for a single project
-  Future<Map<String, dynamic>?> _loadProjectProgress(String folderPath) async {
-    try {
-      final progressFile = File('$folderPath/progress.json');
-      if (await progressFile.exists()) {
-        final content = await progressFile.readAsString();
-        return jsonDecode(content) as Map<String, dynamic>;
-      }
-    } catch (e) {
-      print("Error loading progress: $e");
-    }
-    return null;
-  }
-
+  // --- 1. SCAN PHONE FOR FOLDERS ---
   Future<void> _loadHistory() async {
     setState(() {
       _isLoadingHistory = true;
@@ -95,11 +62,16 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final Directory appDir = await getApplicationDocumentsDirectory();
+
+      // Get all items in the documents directory
       final List<FileSystemEntity> entities = appDir.listSync();
+
+      // Filter: Keep only Directories (these are your furniture names)
       final List<FileSystemEntity> folders = entities.where((e) {
         return e is Directory;
       }).toList();
 
+      // Sort by date modified (Newest projects at top)
       folders.sort((a, b) {
         return b.statSync().modified.compareTo(a.statSync().modified);
       });
@@ -109,9 +81,6 @@ class _HomePageState extends State<HomePage> {
         _filteredProjects = folders;
         _isLoadingHistory = false;
       });
-
-      // 🆕 Load progress after folders are loaded
-      await _loadAllProgress();
     } catch (e) {
       print("Error loading history: $e");
       setState(() {
@@ -120,19 +89,20 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // --- 2. OPEN THE ASSEMBLY PLAYER ---
   void _openProject(Directory folder) async {
-    // Navigate and wait for return
+    // We use await here so when the user comes BACK from the page,
+    // we reload history to update the "Step 2/3" text immediately.
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => FurnitureAssemblyPage(folder: folder),
       ),
     );
-
-    // 🆕 Reload progress when returning from assembly page
-    await _loadAllProgress();
+    _loadHistory();
   }
 
+  // --- 3. DELETE PROJECT ---
   Future<void> _deleteProject(Directory folder) async {
     try {
       await folder.delete(recursive: true);
@@ -234,7 +204,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
 
-              // ACTION CARDS
+              // ACTION CARDS (Top Grid)
               GridView.count(
                 crossAxisCount: 2,
                 shrinkWrap: true,
@@ -281,7 +251,7 @@ class _HomePageState extends State<HomePage> {
               ),
               const SizedBox(height: 16),
 
-              // PROJECT LIST
+              // DYNAMIC PROJECT LIST
               if (_isLoadingHistory)
                 const Center(
                   child: Padding(
@@ -341,21 +311,42 @@ class _HomePageState extends State<HomePage> {
                   final Directory folder = entity as Directory;
                   final String folderName = folder.path.split('/').last;
 
-                  // Count total steps
-                  int totalSteps = 0;
+                  // --- LOGIC TO READ PROGRESS -----------------------
+                  String subText = "";
+
+                  // 1. Calculate file count (total steps based on files)
+                  int fileCount = 0;
                   try {
-                    totalSteps = folder
+                    fileCount = folder
                         .listSync()
-                        .where((e) => e.path.endsWith('_white.glb'))
+                        .where((e) => e.path.endsWith('.glb'))
                         .length;
+                    subText = "$fileCount steps"; // Default fallback
                   } catch (_) {}
 
-                  // 🆕 Get progress data
-                  final progressData = _projectProgress[folderName];
-                  final int currentStep = progressData?['currentStep'] ?? 0;
-                  final int stepsLeft = totalSteps > 0
-                      ? totalSteps - currentStep
-                      : 0;
+                  // 2. Check for progress.json
+                  File progressFile = File('${folder.path}/progress.json');
+                  if (progressFile.existsSync()) {
+                    try {
+                      // Read the file synchronously (it's small, so it's safe here)
+                      String jsonContent = progressFile.readAsStringSync();
+                      Map<String, dynamic> data = jsonDecode(jsonContent);
+
+                      int current = data['currentStep'] ?? 0;
+                      int total = data['totalSteps'] ?? fileCount;
+
+                      // Format: Step 2/3
+                      subText = "Step $current/$total";
+
+                      // Optional: Make it look nice if finished
+                      if (current >= total && total > 0) {
+                        subText = "Completed ($total/$total)";
+                      }
+                    } catch (e) {
+                      print("Error reading progress: $e");
+                    }
+                  }
+                  // --------------------------------------------------
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
@@ -425,40 +416,15 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                   ),
                                   const SizedBox(height: 4),
-                                  // 🆕 Show progress or total steps
-                                  if (totalSteps > 0 && currentStep > 0)
-                                    Row(
-                                      children: [
-                                        Icon(
-                                          Icons.check_circle,
-                                          size: 14,
-                                          color: stepsLeft == 0
-                                              ? Colors.green
-                                              : Colors.orange,
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          stepsLeft == 0
-                                              ? "Completed ✓"
-                                              : "$stepsLeft/$totalSteps steps left",
-                                          style: TextStyle(
-                                            color: stepsLeft == 0
-                                                ? Colors.green
-                                                : Colors.orange.shade700,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  else
-                                    Text(
-                                      "$totalSteps steps",
-                                      style: TextStyle(
-                                        color: Colors.grey.shade500,
-                                        fontSize: 13,
-                                      ),
+                                  Text(
+                                    subText, // <--- CHANGED FROM "fileCount steps"
+                                    style: TextStyle(
+                                      color:
+                                          Colors.orange, // Highlight progress
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 13,
                                     ),
+                                  ),
                                 ],
                               ),
                             ),

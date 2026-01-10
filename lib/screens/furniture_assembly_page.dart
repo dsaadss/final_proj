@@ -56,29 +56,54 @@ class _FurnitureAssemblyPageState extends State<FurnitureAssemblyPage> {
   }
 
   Future<void> _loadAllData() async {
+    print("🔵 START: Loading all data...");
+
+    // 🆕 IMPORTANT: Load steps FIRST, then progress
+    print("🔵 STEP 1: Loading assembly steps...");
     await _loadAssemblySteps();
+    print("🔵 STEP 1 DONE: Loaded ${_steps.length} steps");
+
+    print("🔵 STEP 2: Loading progress...");
+    await _loadProgress();
+    print("🔵 STEP 2 DONE: Current index = $_currentIndex");
+
+    print("🔵 STEP 3: Loading parts...");
     await _loadParts();
+    print("🔵 STEP 3 DONE: Loaded ${_projectParts.length} parts");
+
+    print("🔵 STEP 4: Loading PDF and metadata...");
     await _loadPdfAndMetadata();
-    await _loadProgress(); // 🆕 Load saved progress
+    print("🔵 STEP 4 DONE: PDF available = $_hasPdf");
+
+    print("✅ ALL DATA LOADED SUCCESSFULLY");
   }
 
   // 🆕 Load saved progress
   Future<void> _loadProgress() async {
+    // Don't try to load progress if there are no steps
+    if (_steps.isEmpty) return;
+
     try {
       final progressFile = File('${widget.folder.path}/progress.json');
       if (await progressFile.exists()) {
         final content = await progressFile.readAsString();
         final data = jsonDecode(content) as Map<String, dynamic>;
-        setState(() {
-          _currentIndex = data['currentStep'] ?? 0;
-          // Make sure index is within bounds
-          if (_currentIndex >= _steps.length) {
-            _currentIndex = _steps.length - 1;
-          }
-        });
+
+        int savedStep = data['currentStep'] ?? 0;
+
+        // Make sure index is within bounds
+        if (savedStep >= 0 && savedStep < _steps.length) {
+          setState(() {
+            _currentIndex = savedStep;
+          });
+        }
       }
     } catch (e) {
       print("Error loading progress: $e");
+      // If there's an error, just start from step 0
+      setState(() {
+        _currentIndex = 0;
+      });
     }
   }
 
