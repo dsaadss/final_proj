@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_archive/flutter_archive.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // 🆕 Import
 
 import 'furniture_assembly_page.dart';
 import 'annotate_pdf_page.dart';
@@ -19,9 +20,6 @@ class UploadPage extends StatefulWidget {
 }
 
 class _UploadPageState extends State<UploadPage> {
-  // ⚠️ Ensure this matches your local server IP
-  final String _uploadUrl = "http://192.168.1.32:8000/upload_image";
-
   final TextEditingController _furnitureNameController =
       TextEditingController();
 
@@ -32,7 +30,7 @@ class _UploadPageState extends State<UploadPage> {
   bool _isUploading = false;
   String _responseMessage = "";
 
-  // --- 🪄 PDF WIZARD FLOW ---
+  // --- 🪄 PDF WIZARD FLOW (Unchanged) ---
   Future<void> _pickPdfAndStartWizard() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -41,22 +39,15 @@ class _UploadPageState extends State<UploadPage> {
 
     if (result != null) {
       _originalPdfFile = File(result.files.single.path!);
-
-      // PHASE 1: HARDWARE SCANNING
       final List<AssemblyPart>? scannedParts = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => PartSelectionPage(pdfFile: _originalPdfFile!),
         ),
       );
+      if (scannedParts != null) setState(() => _detectedParts = scannedParts);
 
-      if (scannedParts != null) {
-        setState(() => _detectedParts = scannedParts);
-      }
-
-      // PHASE 2: ASSEMBLY STEPS
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Hardware saved! Now crop the Assembly Steps."),
@@ -80,7 +71,7 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // --- 🚀 UPLOAD LOGIC ---
+  // --- 🚀 DYNAMIC UPLOAD LOGIC ---
   Future<void> _uploadAllFiles() async {
     if (_pickedSteps.isEmpty) return;
 
@@ -95,19 +86,28 @@ class _UploadPageState extends State<UploadPage> {
     setState(() => _isUploading = true);
 
     try {
+      // 🆕 FETCH SAVED CONFIG
+      final prefs = await SharedPreferences.getInstance();
+      final String ip = prefs.getString('server_ip') ?? "192.168.1.32";
+      final String port = prefs.getString('server_port') ?? "8000";
+      final String uploadUrl =
+          "http://$ip:$port/upload_image"; // 👈 Dynamic URL
+
       for (int i = 0; i < _pickedSteps.length; i++) {
-        setState(() {
-          _responseMessage =
-              "Processing Step ${i + 1} of ${_pickedSteps.length}...";
-        });
+        setState(
+          () => _responseMessage =
+              "Processing Step ${i + 1} of ${_pickedSteps.length}...",
+        );
 
         File fileToUpload = _pickedSteps[i].imageFile;
-        var request = http.MultipartRequest("POST", Uri.parse(_uploadUrl));
+        var request = http.MultipartRequest(
+          "POST",
+          Uri.parse(uploadUrl),
+        ); // 👈 Use dynamic URL
         request.files.add(
           await http.MultipartFile.fromPath('file', fileToUpload.path),
         );
 
-        // Timeout added for network stability
         var streamedResponse = await request.send().timeout(
           const Duration(seconds: 60),
         );
@@ -138,7 +138,7 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // --- 📦 UNZIP HELPER ---
+  // --- 📦 UNZIP HELPER (Unchanged) ---
   Future<void> _unzipAndSaveModels(
     List<int> zipBytes,
     String folderName,
@@ -182,20 +182,18 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // --- 💾 DATA PERSISTENCE ---
+  // --- 💾 DATA PERSISTENCE (Unchanged) ---
   Future<void> _savePartsJsonToFolder(String folderName) async {
     final Directory appDir = await getApplicationDocumentsDirectory();
     final Directory furnitureDir = Directory("${appDir.path}/$folderName");
-
     List<Map<String, dynamic>> cleanPartsList = [];
     for (int i = 0; i < _detectedParts.length; i++) {
       AssemblyPart part = _detectedParts[i];
       String partFileName = "part_${i}_${part.id}.png";
-      if (part.imageBytes.isNotEmpty) {
+      if (part.imageBytes.isNotEmpty)
         await File(
           "${furnitureDir.path}/$partFileName",
         ).writeAsBytes(part.imageBytes);
-      }
       cleanPartsList.add({
         "id": part.id,
         "totalQuantity": part.totalQuantity,
@@ -242,7 +240,6 @@ class _UploadPageState extends State<UploadPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // 1. SCROLLABLE CONTENT AREA
             Expanded(
               child: SingleChildScrollView(
                 child: Column(
@@ -311,7 +308,6 @@ class _UploadPageState extends State<UploadPage> {
                       ),
                     ),
                     const Divider(height: 1),
-                    // STEP LIST (Embedded in Column using shrinkWrap)
                     if (_pickedSteps.isEmpty)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 60),
@@ -336,7 +332,7 @@ class _UploadPageState extends State<UploadPage> {
                       )
                     else
                       ReorderableListView.builder(
-                        shrinkWrap: true, // Crucial for nested scrolling
+                        shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
                         header: const Padding(
                           padding: EdgeInsets.all(12.0),
@@ -378,7 +374,6 @@ class _UploadPageState extends State<UploadPage> {
                 ),
               ),
             ),
-            // 2. FIXED BOTTOM ACTION BAR
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
